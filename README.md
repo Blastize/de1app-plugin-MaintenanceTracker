@@ -10,8 +10,6 @@ with their own name, unit and threshold.
 
 Author: **Blastize** · Current version: **0.19.1** (Pass 20)
 
-<img src="images/main_list.png" alt="Maintenance Tracker main list (dark mode)" width="740">
-
 ## What it will do (target design)
 
 - You record each maintenance event with one tap; the plugin stores only a
@@ -201,5 +199,5 @@ the DE1app by hand and enable it under Settings → App → Extensions.
 - `plugin.tcl` — manifest: metadata, settings defaults, framework hooks.
 - `MaintenanceTracker.tcl` — implementation: layout tokens, navigation,
   settings page, public API.
-- `filelist.txt`, `README.md`, `CHANGELOG.md`, `PROJECT_STATE.md` — docs.
+- `filelist.txt`, `README.md`, `CHANGELOG.md` — docs.
 - `settings.tdb` — created at runtime by the app; not part of the package.
