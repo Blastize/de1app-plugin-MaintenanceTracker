@@ -1,6 +1,29 @@
 #
 # Maintenance Tracker -- DE1app plugin manifest
 #
+# Pass 22 (v0.21.0): auto choice at creation + auto-count tags. The
+# New Tracker page's top-right header toggle picks the auto-record
+# source while creating ("Auto: off / Clean cycle / Descale cycle").
+# Card tags now tell the two automations apart: AUTO-RECORD (the
+# tracker resets itself when a Clean/Descale cycle completes) vs
+# AUTO-COUNT (shots/ml counters climb by themselves; recording the
+# maintenance stays a manual tap), and the Detail page says which in
+# words. No new write behavior of any kind.
+#
+# Pass 21 (v0.20.0): relative time + choosable auto-record sources.
+# "Last done" now reads "(just now / N minutes / N hours / N days
+# ago)" instead of always days. Every tracker (built-in or custom)
+# carries an `auto_src` field -- off, Clean cycle or Descale cycle --
+# set from a new "Auto-record" row on its Edit page; the existing
+# cycle detectors now record EVERY subscribed tracker instead of the
+# hardwired backflush/descale pair (a migration reproduces the old
+# wiring exactly, so nothing changes until the user edits it).
+# Auto-recording trackers wear an "AUTO" tag on their card and name
+# their source on the Detail page; Diagnostics shows how many trackers
+# each detector feeds. No new write behavior: the same settings.tdb
+# save paths (explicit taps + one auto event per real detected cycle,
+# still gated by the auto_record toggle and the duration thresholds).
+#
 # v0.19.1 (owner follow-up): the normal-style buttons follow the theme
 # too (muted indigo faces on dark, restyled live via their -btn shape
 # tags). Danger red and the white labels stay identical in both.
@@ -161,7 +184,7 @@ namespace eval ::plugins::MaintenanceTracker {
     variable contact     "n/a"
     # Bare number, no "v" prefix (ShotHistoryEditor v0.6.4 lesson: the
     # startup log message prepends one).
-    variable version     "0.19.1"
+    variable version     "0.21.0"
     variable name        "Maintenance Tracker"
     variable description "Tracks machine maintenance (backflush, descale, gasket, burrs, water filter, water bottle level, plus your own custom trackers) from user-recorded events and the machine's own dispense reports. Read-only by design; writes only its own settings file."
 
@@ -234,7 +257,7 @@ proc ::plugins::MaintenanceTracker::main {} {
             set hooked 1
         }
     }
-    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 20: dark mode, SDB read-only)" }
+    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 22: auto at creation + auto-count tags, SDB read-only)" }
     return
 }
 

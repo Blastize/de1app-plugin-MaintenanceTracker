@@ -1,6 +1,33 @@
 # ===========================================================================
 # Maintenance Tracker -- implementation
 #
+# Pass 22 (v0.21.0): auto choice at creation + auto-count tags (owner
+# follow-ups on Pass 21). The Add page gained an auto-source toggle in
+# its top-right header slot ("Auto: off / Clean cycle / Descale
+# cycle"; the page body is full, and the mode-button slot is the
+# design system's place for exactly this kind of choice) -- add_save
+# stores the pick. The card tag now distinguishes the two kinds of
+# automation: AUTO-RECORD (auto_src resets the tracker on a detected
+# cycle) vs AUTO-COUNT (shots/ml counters climb by themselves but
+# recording stays manual -- the owner's ml water tracker looked
+# "manual" despite metering itself); _item_auto_kind decides, the
+# Detail page spells it out ("Counts automatically: all water
+# dispensed"). Also: the Edit page's auto_toggle joined the theme
+# restyle list (v0.20.0 gap). No new write behavior.
+#
+# Pass 21 (v0.20.0): relative time + per-tracker auto sources. The
+# "Last done" line now shows "(just now / N minutes / N hours / N days
+# ago)" via _fmt_ago instead of always days. Every tracker dict gained
+# `auto_src` ("" / clean / descale): the cycle detectors dispatch
+# through _record_auto_src to ALL subscribed trackers instead of the
+# previously hardwired backflush/descale ids (a one-time migration in
+# apply_defaults reproduces the old wiring, so behavior is unchanged
+# until the user edits it). The Edit page's new "Auto-record" row
+# cycles off -> Clean cycle -> Descale cycle for ANY tracker; cards
+# wear an accent "AUTO" tag under the counter, the Detail page names
+# the source, Diagnostics shows per-source subscriber counts. No new
+# write behavior: the same settings.tdb save paths as v0.6.0.
+#
 # Pass 20 (v0.19.0): dark mode. Every non-state color the plugin
 # paints now flows from _apply_palette (light/dark values per
 # settings(theme); state tints recompute automatically via the blend
@@ -109,8 +136,8 @@
 # Pass 8 (v0.7.0): custom trackers. Users with more than one grinder (or
 # any gear the built-in six don't cover) can add their own named trackers
 # -- label, days/shots unit, threshold -- which ride every existing
-# mechanism unchanged (cards, Record/Confirm, event log, Detail, Undo,
-# auto nothing: custom items are manual-record only). Custom trackers can
+# mechanism unchanged (cards, Record/Confirm, event log, Detail, Undo;
+# manual-record only until v0.20.0's auto_src). Custom trackers can
 # be deleted from their Detail page (two-tap confirm; the deleted dict is
 # kept in settings as `last_deleted_custom` so a mistake is recoverable
 # by hand). Shot-unit custom counters count ALL shots -- the database
@@ -255,14 +282,19 @@ namespace eval ::plugins::MaintenanceTracker {
         # `icon` like customs do, so Edit works uniformly. label ""
         # means "use the fixed default name" (_item_label falls back);
         # icon defaults to the classic built-in glyph.
+        # v0.20.0: `auto_src` names the cycle detector that auto-records
+        # this tracker ("" = manual only). The migration reproduces the
+        # previously hardwired wiring (Clean cycle -> backflush, Descale
+        # cycle -> descale); the field-fill loop plants it into persisted
+        # older dicts, and the Edit page can change it on ANY tracker.
         foreach {id defaults} {
-            backflush     {last_done 0 note {} threshold 30   unit shots label {} icon grate-droplet}
-            descale       {last_done 0 note {} threshold 90   unit days  label {} icon droplet-slash}
-            group_gasket  {last_done 0 note {} threshold 365  unit days  label {} icon ring}
-            burr_clean    {last_done 0 note {} threshold 400  unit shots label {} icon coffee-beans}
-            burr_install  {last_done 0 note {} threshold 30000 unit shots pre_sdb_offset 0 label {} icon gears}
-            water_filter  {last_done 0 note {} threshold 60   unit days  label {} icon filter}
-            water_bottle  {last_done 0 note {} threshold 18900 unit ml   label {} icon tank-water}
+            backflush     {last_done 0 note {} threshold 30   unit shots label {} icon grate-droplet auto_src clean}
+            descale       {last_done 0 note {} threshold 90   unit days  label {} icon droplet-slash auto_src descale}
+            group_gasket  {last_done 0 note {} threshold 365  unit days  label {} icon ring auto_src {}}
+            burr_clean    {last_done 0 note {} threshold 400  unit shots label {} icon coffee-beans auto_src {}}
+            burr_install  {last_done 0 note {} threshold 30000 unit shots pre_sdb_offset 0 label {} icon gears auto_src {}}
+            water_filter  {last_done 0 note {} threshold 60   unit days  label {} icon filter auto_src {}}
+            water_bottle  {last_done 0 note {} threshold 18900 unit ml   label {} icon tank-water auto_src {}}
         } {
             set key "item_$id"
             if {![info exists settings($key)] || [catch { dict size $settings($key) }]} {
@@ -284,6 +316,9 @@ namespace eval ::plugins::MaintenanceTracker {
                 } else {
                     dict set settings($key) events {}
                 }
+            }
+            if {[dict get $settings($key) auto_src] ni {{} clean descale}} {
+                dict set settings($key) auto_src {}
             }
             set settings($key) [_sync_last_done $settings($key)]
         }
@@ -310,7 +345,7 @@ namespace eval ::plugins::MaintenanceTracker {
             regexp {^custom_(\d+)$} $id -> n
             if {$n > $maxn} { set maxn $n }
             set key "item_$id"
-            set cdefaults {label {} last_done 0 note {} threshold 60 unit days icon wrench}
+            set cdefaults {label {} last_done 0 note {} threshold 60 unit days icon wrench auto_src {}}
             if {![info exists settings($key)] || [catch { dict size $settings($key) }]} {
                 set settings($key) $cdefaults
             } else {
@@ -331,6 +366,9 @@ namespace eval ::plugins::MaintenanceTracker {
             }
             if {[dict get $settings($key) unit] ni {days shots ml}} {
                 dict set settings($key) unit days
+            }
+            if {[dict get $settings($key) auto_src] ni {{} clean descale}} {
+                dict set settings($key) auto_src {}
             }
             if {[string trim [dict get $settings($key) label]] eq ""} {
                 dict set settings($key) label $id
@@ -649,6 +687,20 @@ namespace eval ::plugins::MaintenanceTracker {
         return 1
     }
 
+    # v0.20.0: dispatch one detected cycle to EVERY tracker whose
+    # auto_src subscribes to it (previously hardwired backflush/descale).
+    # Hidden trackers still record -- hiding only affects display, and
+    # their history must stay truthful for when they are restored.
+    proc _record_auto_src {src now} {
+        variable settings
+        foreach id [_all_item_ids] {
+            if {![info exists settings(item_$id)]} { continue }
+            set a ""
+            catch { set a [dict get $settings(item_$id) auto_src] }
+            if {$a eq $src} { _record_auto $id $now }
+        }
+    }
+
     # ------------------------------------------------------------------
     #  Water meter (Pass 14). ::de1(volume) integrates the machine's
     #  reported flow for the CURRENT operation (de1_de1.tcl:572-595) and
@@ -730,9 +782,9 @@ namespace eval ::plugins::MaintenanceTracker {
                 set _cycle_state ""
                 set _cycle_enter 0
                 if {$which eq "Clean" && $dur >= $settings(auto_clean_min_s)} {
-                    _record_auto backflush $now
+                    _record_auto_src clean $now
                 } elseif {$which eq "Descale" && $dur >= $settings(auto_descale_min_s)} {
-                    _record_auto descale $now
+                    _record_auto_src descale $now
                 }
             }
             # Cycle entry (a re-enter overwrites any stale stamp).
@@ -770,7 +822,9 @@ namespace eval ::plugins::MaintenanceTracker {
                 set dur [expr {[clock seconds] - $_espresso_enter}]
                 set _espresso_enter 0
                 if {$dur >= $settings(auto_bf_shot_min_s)} {
-                    _record_auto backflush [clock seconds]
+                    # A blind-basket backflush run as an espresso profile
+                    # counts as a clean cycle for auto_src purposes.
+                    _record_auto_src clean [clock seconds]
                 }
             }
         } err]} {
@@ -1222,6 +1276,8 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_edit thr_label text_body
             MaintenanceTracker_edit thr_value text_hi
             MaintenanceTracker_edit icon_label text_body
+            MaintenanceTracker_edit auto_label text_body
+            MaintenanceTracker_edit auto_value text_hi
             MaintenanceTracker_edit edit_note text_mut
             MaintenanceTracker_diagnostics page_title text_hi
             MaintenanceTracker_diagnostics subtitle text_mut
@@ -1244,6 +1300,7 @@ namespace eval ::plugins::MaintenanceTracker {
                 -fill $L(card_bg) -outline $L(card_outline) }
             catch { dui item config MaintenanceTracker_settings row${i}_line1 -fill $L(text_hi) }
             catch { dui item config MaintenanceTracker_settings row${i}_line3 -fill $L(text_mut) }
+            catch { dui item config MaintenanceTracker_settings row${i}_auto -fill $L(icon_sel) }
             catch { dui item config MaintenanceTracker_settings row${i}_tick \
                 -fill $L(bar_tick) -outline $L(bar_tick) }
         }
@@ -1279,9 +1336,9 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_confirm_burr {minus100 minus10 plus10 plus100 bar_cancel bar_confirm}
             MaintenanceTracker_confirm_bottle {minus1000 minus100 plus100 plus1000 bar_cancel bar_confirm}
             MaintenanceTracker_detail {btn_edit bar_left bar_hide}
-            MaintenanceTracker_add {unit_toggle step0 step1 step2 step3
+            MaintenanceTracker_add {btn_auto unit_toggle step0 step1 step2 step3
                                     hid0 hid1 hid2 hid3 hid4 hid5 bar_cancel bar_save}
-            MaintenanceTracker_edit {step0 step1 step2 step3 bar_cancel bar_save}
+            MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 bar_cancel bar_save}
             MaintenanceTracker_diagnostics {bar_back}
         }
         foreach {p tags} $btn_list {
@@ -1902,14 +1959,80 @@ namespace eval ::plugins::MaintenanceTracker {
         return "$value [translate {of}] $threshold [translate {shots since last done}]"
     }
 
+    # v0.20.0: human relative time -- minutes up to 59, hours up to 23,
+    # then days (owner request; "0 days ago" told you nothing on the day
+    # you actually did the task). Singular/plural spelled out; a clock
+    # skew into the future reads as "just now".
+    proc _fmt_ago {ts} {
+        if {![string is wide -strict $ts] || $ts <= 0} { return "" }
+        set secs [expr {[clock seconds] - $ts}]
+        if {$secs < 60} { return [translate "just now"] }
+        set mins [expr {$secs / 60}]
+        if {$mins < 60} {
+            if {$mins == 1} { return "1 [translate {minute ago}]" }
+            return "$mins [translate {minutes ago}]"
+        }
+        set hours [expr {$secs / 3600}]
+        if {$hours < 24} {
+            if {$hours == 1} { return "1 [translate {hour ago}]" }
+            return "$hours [translate {hours ago}]"
+        }
+        set days [expr {$secs / 86400}]
+        if {$days == 1} { return "1 [translate {day ago}]" }
+        return "$days [translate {days ago}]"
+    }
+
     proc _item_last_done_line {entry} {
         set ts [dict get $entry last_done]
         if {![string is wide -strict $ts] || $ts <= 0} { return "" }
         set line "[translate {Last done:}] [clock format $ts -format {%Y-%m-%d %H:%M}]"
-        if {[dict exists $entry days_since]} {
-            append line "  ([dict get $entry days_since] [translate {days ago}])"
-        }
+        set ago [_fmt_ago $ts]
+        if {$ago ne ""} { append line "  ($ago)" }
         return $line
+    }
+
+    # v0.20.0: an item's validated auto-record source ("" = manual only).
+    proc _item_auto_src {id} {
+        variable settings
+        set a ""
+        catch { set a [dict get $settings(item_$id) auto_src] }
+        if {$a ni {clean descale}} { set a "" }
+        return $a
+    }
+
+    # Human name for an auto source, shared by the Edit page's value
+    # text and the Detail page's auto line.
+    proc _auto_src_label {src} {
+        switch -- $src {
+            clean   { return [translate "Clean cycle"] }
+            descale { return [translate "Descale cycle"] }
+        }
+        return [translate "off -- record manually"]
+    }
+
+    # Short form for button faces (the Add page's header toggle).
+    proc _auto_src_short {src} {
+        switch -- $src {
+            clean   { return [translate "Clean cycle"] }
+            descale { return [translate "Descale cycle"] }
+        }
+        return [translate "off"]
+    }
+
+    # v0.21.0: what is automatic about this tracker (owner request --
+    # the ml water tracker climbs by itself yet showed no tag).
+    #   record -- an auto_src resets it when a cycle completes (it also
+    #            counts by itself if its unit is shots/ml);
+    #   count  -- no auto_src, but its shots/ml counter climbs on its
+    #            own (recording the maintenance stays manual);
+    #   ""     -- fully manual (days unit, no auto_src).
+    proc _item_auto_kind {id} {
+        variable settings
+        if {[_item_auto_src $id] ne ""} { return record }
+        set u ""
+        catch { set u [dict get $settings(item_$id) unit] }
+        if {$u in {shots ml}} { return count }
+        return ""
     }
 
     proc _state_color {state} {
@@ -2077,6 +2200,9 @@ namespace eval ::plugins::MaintenanceTracker {
     variable add_threshold 60
     variable add_error ""
     variable add_icon wrench
+    # v0.21.0: auto-record source chosen at creation ("" / clean /
+    # descale), via the Add page's header toggle.
+    variable add_auto ""
 
     # Per-unit starting thresholds (also applied when the unit toggles:
     # a days threshold makes no sense as a shots threshold and vice versa).
@@ -2092,12 +2218,25 @@ namespace eval ::plugins::MaintenanceTracker {
         variable add_threshold
         variable add_error
         variable add_icon
+        variable add_auto
         set add_label ""
         set add_unit days
         set add_threshold [_add_default_threshold days]
         set add_error ""
         set add_icon wrench
+        set add_auto ""
         open_page MaintenanceTracker_add
+    }
+
+    # v0.21.0: same cycle as the Edit page's row, for the Add header
+    # toggle: off -> Clean cycle -> Descale cycle -> off.
+    proc toggle_add_auto {} {
+        variable add_auto
+        switch -- $add_auto {
+            ""      { set add_auto clean }
+            clean   { set add_auto descale }
+            default { set add_auto "" }
+        }
     }
 
     proc toggle_add_unit {} {
@@ -2156,14 +2295,19 @@ namespace eval ::plugins::MaintenanceTracker {
         variable picker_icons
         set icon $add_icon
         if {$icon ni $picker_icons} { set icon wrench }
+        # v0.21.0: the auto source is chosen at creation via the header
+        # toggle (still editable later on the Edit page).
+        variable add_auto
+        set asrc $add_auto
+        if {$asrc ni {{} clean descale}} { set asrc "" }
         set id "custom_$settings(custom_next)"
         incr settings(custom_next)
         set settings(item_$id) [dict create \
             label $label last_done 0 note "" threshold $thr unit $add_unit \
-            icon $icon events {}]
+            icon $icon events {} auto_src $asrc]
         lappend settings(custom_ids) $id
         save_settings
-        catch { msg "MaintenanceTracker: added custom tracker '$id' ($label, $thr $add_unit)" }
+        catch { msg "MaintenanceTracker: added custom tracker '$id' ($label, $thr $add_unit, auto '$asrc')" }
         _invalidate_status_cache
         # Land the user on the card page that shows the new tracker.
         catch { ::dui::pages::MaintenanceTracker_settings::goto_last_page }
@@ -2273,6 +2417,9 @@ namespace eval ::plugins::MaintenanceTracker {
     variable edit_threshold 60
     variable edit_unit days
     variable edit_icon wrench
+    # v0.20.0: the tracker's auto-record source ("" / clean / descale),
+    # cycled by the Edit page's Change button.
+    variable edit_auto ""
     variable edit_error ""
     # v0.15.0: two-step delete lives on the Edit page (customs only).
     variable edit_delete_armed 0
@@ -2283,6 +2430,7 @@ namespace eval ::plugins::MaintenanceTracker {
         variable edit_threshold
         variable edit_unit
         variable edit_icon
+        variable edit_auto
         variable edit_error
         variable edit_delete_armed
         variable picker_icons
@@ -2313,9 +2461,21 @@ namespace eval ::plugins::MaintenanceTracker {
             set ic [dict get $d icon]
             if {$ic ne ""} { set edit_icon $ic }
         }
+        set edit_auto [_item_auto_src $id]
         set edit_error ""
         open_page MaintenanceTracker_edit
         return 1
+    }
+
+    # v0.20.0: cycle the Edit page's auto-record source through the
+    # available detectors: off -> Clean cycle -> Descale cycle -> off.
+    proc toggle_edit_auto {} {
+        variable edit_auto
+        switch -- $edit_auto {
+            ""      { set edit_auto clean }
+            clean   { set edit_auto descale }
+            default { set edit_auto "" }
+        }
     }
 
     proc cancel_edit {} {
@@ -2345,6 +2505,7 @@ namespace eval ::plugins::MaintenanceTracker {
         variable edit_label
         variable edit_threshold
         variable edit_icon
+        variable edit_auto
         variable edit_error
         variable edit_delete_armed
         variable picker_icons
@@ -2377,9 +2538,14 @@ namespace eval ::plugins::MaintenanceTracker {
         if {$edit_icon in $picker_icons} {
             dict set d icon $edit_icon
         }
+        # v0.20.0: auto-record source. Only validated values are written;
+        # "" (off) is a deliberate, storable choice.
+        if {$edit_auto in {{} clean descale}} {
+            dict set d auto_src $edit_auto
+        }
         set settings(item_$id) $d
         save_settings
-        catch { msg "MaintenanceTracker: edited '$id' ($label, [dict get $d threshold] [dict get $d unit], [dict get $d icon])" }
+        catch { msg "MaintenanceTracker: edited '$id' ($label, [dict get $d threshold] [dict get $d unit], [dict get $d icon], auto '[dict get $d auto_src]')" }
         set edit_error ""
         # The threshold feeds the state math -- recompute on return.
         _invalidate_status_cache
@@ -2574,6 +2740,15 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                 -font $L(font_caption_b) -width $name_w -fill $L(text_mut) -anchor w -justify left
             dui add dtext $page $bar_x2 [expr {$top + $L(card_name_dy)}] -tags row${i}_cnt -text "" \
                 -font $L(font_primary) -fill $L(text_hi) -anchor e -justify right
+            # v0.20.0: "AUTO" tag under the counter (right-aligned, in
+            # the counter's reserved 260-ref-px zone -- the left texts
+            # stop at name_w, so nothing can collide). Shown only for
+            # trackers with an auto_src; accent color, both themes.
+            # Non-empty creation label (v0.7.1 rule) + -initial_state
+            # hidden (v0.10.1 no-flash rule for start-hidden items).
+            dui add dtext $page $bar_x2 [expr {$top + $L(card_state_dy)}] -tags row${i}_auto \
+                -text [translate "AUTO"] -font $L(font_caption_b) -fill $L(icon_sel) \
+                -anchor e -justify right -initial_state hidden
 
             # Wear bar: fixed segment rects whose -fill reconfigures (the
             # dot mechanism -- no canvas coords manipulation), plus a
@@ -2780,6 +2955,27 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                 catch { dui item config $page row${i}_state \
                     -text [string toupper [::plugins::MaintenanceTracker::_state_word $state]] \
                     -fill $color }
+                # v0.20.0: AUTO tag on trackers with an auto_src;
+                # v0.21.0: shots/ml trackers count by themselves too, so
+                # the tag now says WHICH automation this tracker has --
+                # AUTO-RECORD (resets itself on a detected cycle) or
+                # AUTO-COUNT (counter climbs by itself; recording the
+                # maintenance stays manual). Fully manual = no tag.
+                switch -- [::plugins::MaintenanceTracker::_item_auto_kind $id] {
+                    record {
+                        catch { dui item config $page row${i}_auto \
+                            -text [translate "AUTO-RECORD"] }
+                        catch { dui item show $page row${i}_auto -initial 1 }
+                    }
+                    count {
+                        catch { dui item config $page row${i}_auto \
+                            -text [translate "AUTO-COUNT"] }
+                        catch { dui item show $page row${i}_auto -initial 1 }
+                    }
+                    default {
+                        catch { dui item hide $page row${i}_auto -initial 1 }
+                    }
+                }
                 catch { dui item config $page row${i}_plate -fill $tint -outline $tint }
                 # v0.17.0 vector swap, v0.18.0 factored into the shared
                 # renderer (the Detail page header uses it too).
@@ -2839,7 +3035,7 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                     catch { dui item config $page row${i}_seg${j} -fill $c -outline $c }
                 }
             } else {
-                foreach tag {bg plate icon line1 state cnt line3 tick} {
+                foreach tag {bg plate icon line1 state cnt line3 tick auto} {
                     catch { dui item hide $page row${i}_$tag -initial 1 }
                 }
                 foreach {vtag vname} {vsw steam-wand vgf gasket-flat} {
@@ -3259,8 +3455,34 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             -text [::plugins::MaintenanceTracker::_item_label $id] }
         catch { dui item config $page detail_counter \
             -text "([::plugins::MaintenanceTracker::_state_word $state])  [::plugins::MaintenanceTracker::_item_detail $id $entry]" }
-        catch { dui item config $page detail_last \
-            -text [::plugins::MaintenanceTracker::_item_last_done_line $entry] }
+        # v0.20.0: the last-done line also says whether (and from what)
+        # this tracker auto-records; v0.21.0: auto-COUNTING trackers
+        # (shots/ml, no auto_src) get their own wording -- the exact
+        # thing the card's AUTO-RECORD / AUTO-COUNT tag points at.
+        set last_txt [::plugins::MaintenanceTracker::_item_last_done_line $entry]
+        set auto_txt ""
+        switch -- [::plugins::MaintenanceTracker::_item_auto_kind $id] {
+            record {
+                set auto_txt "[translate {Auto-records on:}] [::plugins::MaintenanceTracker::_auto_src_label [::plugins::MaintenanceTracker::_item_auto_src $id]]"
+            }
+            count {
+                set u ""
+                catch { set u [dict get $::plugins::MaintenanceTracker::settings(item_$id) unit] }
+                if {$u eq "ml"} {
+                    set auto_txt "[translate {Counts automatically:}] [translate {all water dispensed}]"
+                } else {
+                    set auto_txt "[translate {Counts automatically:}] [translate {every espresso shot}]"
+                }
+            }
+        }
+        if {$auto_txt ne ""} {
+            if {$last_txt eq ""} {
+                set last_txt $auto_txt
+            } else {
+                append last_txt "   ·   $auto_txt"
+            }
+        }
+        catch { dui item config $page detail_last -text $last_txt }
         set color [::plugins::MaintenanceTracker::_state_color $state]
         catch { dui item config $page detail_dot -fill $color -outline $color }
 
@@ -3430,10 +3652,29 @@ namespace eval ::dui::pages::MaintenanceTracker_add {
         set cx [expr {($lx + $rx) / 2}]
         set vx $L(value_x)
 
+        # v0.21.0: title width trimmed clear of the header's corners --
+        # the auto toggle now lives in the top-right mode-button slot.
         dui add dtext $page $cx $L(header_solo_title_y) -tags page_title \
             -text [translate "New Tracker"] \
-            -font $L(font_title) -width $L(content_w) -fill $L(text_hi) \
-            -anchor center -justify center
+            -font $L(font_title) \
+            -width [expr {$L(content_w) - 2 * ($L(btn_w_xwide) + $L(lg))}] \
+            -fill $L(text_hi) -anchor center -justify center
+
+        # v0.21.0: auto-record source toggle, top-right header corner
+        # (the design system's mode-button slot -- the same place the
+        # main page's theme button and Detail's Edit button live; the
+        # page is otherwise full, and the choice IS a mode of the new
+        # tracker). Face carries the current value ("Auto: off" ->
+        # "Auto: Clean cycle" -> "Auto: Descale cycle"); created with
+        # its real initial label (v0.7.1 rule) and relabeled by
+        # refresh.
+        set at_y1 [expr {int(round(22 * $L(scale)))}]
+        dui add dbutton $page [expr {$rx - $L(btn_w_xwide)}] $at_y1 \
+            $rx [expr {$at_y1 + $L(btn_h)}] \
+            -tags btn_auto \
+            -label "[translate {Auto:}] [::plugins::MaintenanceTracker::_auto_src_short {}]" \
+            -command ::dui::pages::MaintenanceTracker_add::toggle_auto \
+            -label_font $L(font_button) -style mt_btn
 
         # Name entry, top half of the screen (Android keyboard rule).
         # v0.9.0: the whole column moved up to make room for the icon
@@ -3589,6 +3830,11 @@ namespace eval ::dui::pages::MaintenanceTracker_add {
         }
         catch { dui item config $page add_error_text \
             -text $::plugins::MaintenanceTracker::add_error }
+        # v0.21.0: auto toggle face follows the current choice. BARE
+        # tag (the v0.6.2 wildcard rule).
+        catch { dui item config $page btn_auto \
+            -label "[translate {Auto:}] [::plugins::MaintenanceTracker::_auto_src_short \
+                $::plugins::MaintenanceTracker::add_auto]" }
         # v0.9.0: selection outline on the icon picker (shared helper).
         ::plugins::MaintenanceTracker::_refresh_picker $page \
             $::plugins::MaintenanceTracker::add_icon
@@ -3629,6 +3875,14 @@ namespace eval ::dui::pages::MaintenanceTracker_add {
 
     proc toggle_unit {} {
         ::plugins::MaintenanceTracker::toggle_add_unit
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: add refresh failed: $err" }
+        }
+    }
+
+    # v0.21.0: header auto-source toggle.
+    proc toggle_auto {} {
+        ::plugins::MaintenanceTracker::toggle_add_auto
         if {[catch { refresh } err]} {
             catch { msg "MaintenanceTracker: add refresh failed: $err" }
         }
@@ -3740,15 +3994,34 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
             [expr {int(round(424 * $L(scale)))}] \
             [list ::dui::pages::MaintenanceTracker_edit::select_icon]
 
-        # v0.14.0: note and error moved down (were 524/575) under the
-        # second picker row; both stay clear of the bottom bar.
-        set note_y [expr {int(round(570 * $L(scale)))}]
+        # v0.20.0: auto-record row (the Add page's unit-row pattern:
+        # label / current value / Change button). Cycles off -> Clean
+        # cycle -> Descale cycle; refresh renders the current value.
+        # Sits under the second picker row (ends 550 ref); note and
+        # error moved down to 644/688 -- every zone gap stays >= md and
+        # the error line clears the bottom bar.
+        set auto_y [expr {int(round(576 * $L(scale)))}]
+        set vx $L(value_x)
+        dui add dtext $page $lx $auto_y -tags auto_label \
+            -text [translate "Auto-record:"] \
+            -font $L(font_body) -width $L(label_col_w) -fill $L(text_body) \
+            -anchor nw -justify left
+        dui add dtext $page $vx $auto_y -tags auto_value -text "" \
+            -font $L(font_primary) -width [expr {$rx - $L(btn_w_wide) - $L(lg) - $vx}] \
+            -fill $L(text_hi) -anchor nw -justify left
+        dui add dbutton $page [expr {$rx - $L(btn_w_wide)}] [expr {$auto_y - $L(sm)}] \
+            $rx [expr {$auto_y - $L(sm) + $L(btn_h)}] \
+            -tags auto_toggle -label [translate "Change"] \
+            -command ::dui::pages::MaintenanceTracker_edit::toggle_auto \
+            -label_font $L(font_button) -style mt_btn
+
+        set note_y [expr {int(round(644 * $L(scale)))}]
         dui add dtext $page $lx $note_y -tags edit_note \
             -text [translate "The tracker's history and its counting unit (days, shots or ml) stay as they are."] \
             -font $L(font_caption) -width $L(content_w) -fill $L(text_mut) \
             -anchor nw -justify left
 
-        set err_y [expr {int(round(620 * $L(scale)))}]
+        set err_y [expr {int(round(688 * $L(scale)))}]
         dui add dtext $page $cx $err_y -tags edit_error_text -text "" \
             -font $L(font_primary) -width $L(content_w) -fill $L(col_red) \
             -anchor center -justify center
@@ -3796,6 +4069,10 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
         }
         ::plugins::MaintenanceTracker::_refresh_picker $page \
             $::plugins::MaintenanceTracker::edit_icon
+        # v0.20.0: current auto-record source.
+        catch { dui item config $page auto_value \
+            -text [::plugins::MaintenanceTracker::_auto_src_label \
+                $::plugins::MaintenanceTracker::edit_auto] }
         # v0.15.0: delete lives here now (customs only), two-step. While
         # armed, Save hides, the button carries the explicit "Yes, ..."
         # label and the message line says exactly what the second tap
@@ -3829,6 +4106,16 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
         set deltas [::plugins::MaintenanceTracker::_step_deltas_for \
             $::plugins::MaintenanceTracker::edit_unit]
         ::plugins::MaintenanceTracker::adjust_edit_threshold [lindex $deltas $i]
+    }
+
+    # v0.20.0: cycle the auto-record source (no-op while a delete is
+    # armed, like every other editing control on this page).
+    proc toggle_auto {} {
+        if {$::plugins::MaintenanceTracker::edit_delete_armed} { return }
+        ::plugins::MaintenanceTracker::toggle_edit_auto
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: edit refresh failed: $err" }
+        }
     }
 
     # v0.15.0: two-step delete dispatcher (customs only -- re-checked
@@ -3985,7 +4272,17 @@ namespace eval ::dui::pages::MaintenanceTracker_diagnostics {
         set auto_txt [translate "off"]
         catch {
             if {$::plugins::MaintenanceTracker::settings(auto_record)} {
-                set auto_txt "[translate {on}] ([translate {clean}] >= $::plugins::MaintenanceTracker::settings(auto_clean_min_s)s, [translate {descale}] >= $::plugins::MaintenanceTracker::settings(auto_descale_min_s)s)"
+                # v0.20.0: per-source attached-tracker counts, so the
+                # auto_src wiring is inspectable at a glance.
+                set n_clean 0
+                set n_descale 0
+                foreach aid [::plugins::MaintenanceTracker::_all_item_ids] {
+                    switch -- [::plugins::MaintenanceTracker::_item_auto_src $aid] {
+                        clean   { incr n_clean }
+                        descale { incr n_descale }
+                    }
+                }
+                set auto_txt "[translate {on}] ([translate {clean}] >= $::plugins::MaintenanceTracker::settings(auto_clean_min_s)s -> $n_clean, [translate {descale}] >= $::plugins::MaintenanceTracker::settings(auto_descale_min_s)s -> $n_descale)"
             }
         }
         _set_row $page $i [translate "Auto-record cycles"] $auto_txt; incr i

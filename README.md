@@ -8,7 +8,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.19.1** (Pass 20)
+Author: **Blastize** · Current version: **0.21.0** (Pass 22)
 
 ## What it will do (target design)
 
@@ -22,7 +22,39 @@ Author: **Blastize** · Current version: **0.19.1** (Pass 20)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.19.0 — Pass 20)
+## What it does right now (v0.21.0 — Pass 22)
+
+- **Auto source chosen at creation**: the New Tracker page has an
+  "Auto: off / Clean cycle / Descale cycle" toggle in its top-right
+  header corner, so a new tracker can auto-record from day one (still
+  changeable later via Edit).
+- **Two kinds of AUTO, told apart**: cards wear **AUTO-RECORD** when
+  the tracker resets itself after a detected Clean/Descale cycle, and
+  **AUTO-COUNT** when its shots/ml counter climbs by itself while
+  recording the maintenance stays a manual tap (e.g. a water-supply
+  tracker meters every ml dispensed, but you still tap Record when
+  you swap the bottle). Fully manual trackers (days, no source) have
+  no tag. The Detail page says it in words: "Auto-records on: …" or
+  "Counts automatically: every espresso shot / all water dispensed".
+
+- **Human relative time**: the "Last done" line on cards and Detail
+  pages now reads "(just now)", "(N minutes ago)" up to 59, "(N hours
+  ago)" up to 23, then "(N days ago)" — no more "(0 days ago)" on the
+  day you actually did the task.
+- **Choosable auto-record sources**: every tracker — built-in or
+  custom — has an **Auto-record** row on its Edit page that cycles
+  **off → Clean cycle → Descale cycle**. A completed Clean cycle (or a
+  blind-basket backflush run as a "cleaning" espresso profile) and a
+  completed Descale cycle now auto-record *every* tracker subscribed
+  to that source, not just the fixed Backflush/Descale pair — so your
+  own "group head clean" tracker can tick over automatically, and you
+  can turn auto-recording off for a built-in. Existing installs keep
+  exactly the old wiring (Backflush ← Clean cycle, Descale ← Descale
+  cycle) until you change it.
+- **Auto trackers are marked**: the accent-colored tag sits on the
+  card under the counter (AUTO-RECORD / AUTO-COUNT since v0.21.0),
+  the Detail page names what is automatic, and Diagnostics shows how
+  many trackers each cycle detector feeds.
 
 - **Dark mode**: a sun/moon button in the main page's top-right corner
   switches the whole plugin between light and dark instantly — every
@@ -102,19 +134,22 @@ Author: **Blastize** · Current version: **0.19.1** (Pass 20)
   clean" — counting days, shots or ml against a threshold you set with
   stepper buttons. Custom trackers appear as cards after the built-ins
   and use the exact same Record / history / Undo flows, and they feed
-  the Lumen notification dot like every other item. They are
-  manual-record only. Built-in items can never be deleted. **Note:** a
+  the Lumen notification dot like every other item. They start
+  manual-record only — attach a Clean/Descale auto source from their
+  Edit page if you want one. Built-in items can never be deleted.
+  **Note:** a
   shot-based custom tracker counts *every* shot on the machine — the
   shot database cannot tell which grinder pulled which shot — so
   prefer days for gear that does not see every shot.
 - **Auto-recording**: running the machine's own Clean or Descale program
-  records the matching maintenance event automatically once the cycle
+  records every subscribed tracker automatically once the cycle
   completes (aborted cycles are ignored via duration thresholds), and a
-  blind-basket backflush run as a "cleaning" espresso profile records a
-  backflush. Auto events appear in the Detail page history as "recorded
-  automatically" and can be undone exactly like manual ones. Turn the
-  whole feature off with the `auto_record` setting; thresholds are
-  tunable in settings and shown on Diagnostics.
+  blind-basket backflush run as a "cleaning" espresso profile counts as
+  a Clean cycle. Which trackers subscribe to which cycle is set per
+  tracker on its Edit page (v0.20.0). Auto events appear in the Detail
+  page history as "recorded automatically" and can be undone exactly
+  like manual ones. Turn the whole feature off with the `auto_record`
+  setting; thresholds are tunable in settings and shown on Diagnostics.
 
 - Every maintenance item keeps an **append-only event log** (newest 20
   kept). Recording appends an event; the familiar `last_done` is derived
