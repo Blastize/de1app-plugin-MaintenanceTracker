@@ -1,6 +1,15 @@
 #
 # Maintenance Tracker -- DE1app plugin manifest
 #
+# Pass 26 (v0.22.0): linked profile per tracker. The Detail page gains
+# a "Profile:" row -- "Link current profile" stores the profile loaded
+# in the app (filename + title) in the tracker's item dict, "Unlink"
+# removes it, "Load profile" hands it to the app through the core's
+# own select_profile (DrinkMenu's proven call and busy guard), so a
+# backflush alert becomes: wrench, card, Load profile, GHC button.
+# Writes: the two link taps save settings.tdb; loading never touches a
+# file of ours and never starts a flow.
+#
 # Pass 22 (v0.21.0): auto choice at creation + auto-count tags. The
 # New Tracker page's top-right header toggle picks the auto-record
 # source while creating ("Auto: off / Clean cycle / Descale cycle").
@@ -184,7 +193,7 @@ namespace eval ::plugins::MaintenanceTracker {
     variable contact     "n/a"
     # Bare number, no "v" prefix (ShotHistoryEditor v0.6.4 lesson: the
     # startup log message prepends one).
-    variable version     "0.21.0"
+    variable version     "0.22.0"
     variable name        "Maintenance Tracker"
     variable description "Tracks machine maintenance (backflush, descale, gasket, burrs, water filter, water bottle level, plus your own custom trackers) from user-recorded events and the machine's own dispense reports. Read-only by design; writes only its own settings file."
 
@@ -257,7 +266,7 @@ proc ::plugins::MaintenanceTracker::main {} {
             set hooked 1
         }
     }
-    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 22: auto at creation + auto-count tags, SDB read-only)" }
+    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 26: linked profile per tracker, SDB read-only)" }
     return
 }
 

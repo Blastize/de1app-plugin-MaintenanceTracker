@@ -457,9 +457,19 @@ namespace eval ::plugins::MaintenanceTracker {
         return [lindex $candidates 0]
     }
 
+    # Pass 25: idempotent. The handle is closed after every refresh and
+    # again before every open, so the old bare `catch { $db_handle close }`
+    # failed on every refresh; catch swallows the error but leaves
+    # $::errorInfo dirty, and the core BLE runner prints $::errorInfo
+    # (de1_comms.tcl:120) -- "invalid command name ...::sdb" surfaced as
+    # "BLE error info". Closing only an existing command raises nothing.
     proc _close_db {} {
         variable db_handle
-        catch { $db_handle close }
+        if {[llength [info commands $db_handle]]} {
+            if {[catch { $db_handle close } err]} {
+                catch { msg "MaintenanceTracker: SDB close failed: $err" }
+            }
+        }
     }
 
     proc _open_ro_db {} {
@@ -615,6 +625,9 @@ namespace eval ::plugins::MaintenanceTracker {
     variable status_cache_time 0
     variable status_dirty 1
     variable cache_ttl 600
+    # Pass 23: detected shot table + fields, kept for the whole session
+    # (unset again on any SDB read error, forcing re-detection).
+    variable _schema_cache {}
     variable _pending_after ""
 
     # diag() is filled by every refresh and read by the Diagnostics page.
@@ -886,15 +899,27 @@ namespace eval ::plugins::MaintenanceTracker {
         if {$db eq ""} {
             set sdb_error $last_db_error
         } else {
+            # Pass 23: schema detection (sqlite_master walk + one PRAGMA
+            # per table) runs once per app session, not once per refresh
+            # -- the schema cannot change under a read-only browser. On
+            # any read error the cache is dropped so the next refresh
+            # re-detects from scratch.
+            variable _schema_cache
             if {[catch {
-                lassign [_find_shot_table $db] table fields
+                if {[info exists _schema_cache] && [llength $_schema_cache] == 2} {
+                    lassign $_schema_cache table fields
+                } else {
+                    lassign [_find_shot_table $db] table fields
+                }
                 if {$table eq ""} {
                     error "no table with a shot clock column found"
                 }
                 set total_raw [$db onecolumn "SELECT COUNT(*) FROM [_q $table]"]
                 set sdb_ok 1
+                set _schema_cache [list $table $fields]
             } err]} {
                 set sdb_error "SDB read failed: $err"
+                catch { unset _schema_cache }
             }
             if {$sdb_ok} {
                 if {[catch {
@@ -1261,6 +1286,7 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_detail detail_counter text_hi
             MaintenanceTracker_detail detail_last text_body
             MaintenanceTracker_detail hist_title text_hi
+            MaintenanceTracker_detail prof_label text_body
             MaintenanceTracker_add page_title text_hi
             MaintenanceTracker_add name_label text_body
             MaintenanceTracker_add unit_label text_body
@@ -1330,16 +1356,16 @@ namespace eval ::plugins::MaintenanceTracker {
         # (red) and every label (white) stay as they are; the invisible
         # tap zones (picker cells, card text) are never touched.
         set btn_list {
-            MaintenanceTracker_settings {btn_theme prev_page next_page bar_done bar_add bar_diag
+            MaintenanceTracker_settings {btn_theme prev_page next_page mt_done bar_add bar_diag
                                          row0_btn row1_btn row2_btn row3_btn row4_btn}
-            MaintenanceTracker_confirm {bar_cancel bar_confirm}
-            MaintenanceTracker_confirm_burr {minus100 minus10 plus10 plus100 bar_cancel bar_confirm}
-            MaintenanceTracker_confirm_bottle {minus1000 minus100 plus100 plus1000 bar_cancel bar_confirm}
-            MaintenanceTracker_detail {btn_edit bar_left bar_hide}
+            MaintenanceTracker_confirm {mt_cancel bar_confirm}
+            MaintenanceTracker_confirm_burr {minus100 minus10 plus10 plus100 mt_cancel bar_confirm}
+            MaintenanceTracker_confirm_bottle {minus1000 minus100 plus100 plus1000 mt_cancel bar_confirm}
+            MaintenanceTracker_detail {btn_edit bar_left mt_hide mt_link mt_unlink mt_load}
             MaintenanceTracker_add {btn_auto unit_toggle step0 step1 step2 step3
-                                    hid0 hid1 hid2 hid3 hid4 hid5 bar_cancel bar_save}
-            MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 bar_cancel bar_save}
-            MaintenanceTracker_diagnostics {bar_back}
+                                    hid0 hid1 hid2 hid3 hid4 hid5 mt_cancel mt_save}
+            MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 mt_cancel mt_save}
+            MaintenanceTracker_diagnostics {mt_back}
         }
         foreach {p tags} $btn_list {
             foreach tag $tags {
@@ -1662,6 +1688,93 @@ namespace eval ::plugins::MaintenanceTracker {
     }
 
     # ------------------------------------------------------------------
+    #  Cached-canvas rendering (Pass 23; DrinkMenu v0.6.2 mechanism,
+    #  ported). Every `dui item show|hide|config` re-resolves its tag
+    #  against the whole canvas (`find withtag p:<page>&&<tag>`) and
+    #  show/hide with -initial re-enters `dui item config` for the
+    #  initial-state tag; DrinkMenu measured ~1 ms per call on the
+    #  tablet (~540 calls = ~590 ms per refresh). Card items are
+    #  created once at page setup and never destroyed, so their canvas
+    #  ids are stable: resolve each tag once, cache the ids, and drive
+    #  the canvas directly afterwards.
+    # ------------------------------------------------------------------
+
+    variable item_cache
+    array set item_cache {}
+    variable vis_cache
+    array set vis_cache {}
+    variable cfg_cache
+    array set cfg_cache {}
+    # 1 = log refresh timings via msg (dev only, never ship enabled).
+    variable debug_timing 0
+
+    # Canvas ids for one exact tag on one page, resolved once. A tag
+    # that matches nothing is NOT cached, so a later lookup can still
+    # find it (and dui keeps logging its own DEBUG line for a real miss).
+    proc _ids {page tag} {
+        variable item_cache
+        if {[info exists item_cache($page,$tag)]} { return $item_cache($page,$tag) }
+        set ids {}
+        catch { set ids [dui item get $page $tag] }
+        if {$ids ne ""} { set item_cache($page,$tag) $ids }
+        return $ids
+    }
+
+    proc _page_is_current {page} {
+        set cur ""
+        catch { set cur [dui page current] }
+        return [expr {$cur eq $page}]
+    }
+
+    # Raw-canvas replacement for `dui item show|hide <tag> -initial 1`.
+    # Writes the live -state only while the page is the one on screen --
+    # exactly what dui's own -check_page default does, and what keeps a
+    # refresh during setup from painting items over another page -- AND
+    # keeps the "st:hidden" initial-state tag in sync, which is what the
+    # next page show reads (the dui page-show flash trap). Tags whose
+    # visibility has not changed since the last write are skipped.
+    proc _set_vis {page tags on} {
+        variable vis_cache
+        set on [expr {$on ? 1 : 0}]
+        set can ""
+        catch { set can [dui canvas] }
+        if {$can eq ""} { return }
+        set live [expr {[_page_is_current $page] ? 1 : 0}]
+        set state [expr {$on ? "normal" : "hidden"}]
+        set stamp "$on|$live"
+        foreach t $tags {
+            if {[info exists vis_cache($page,$t)] && $vis_cache($page,$t) eq $stamp} { continue }
+            set ids [_ids $page $t]
+            if {$ids eq ""} { continue }
+            foreach id $ids {
+                if {$live} { catch { $can itemconfigure $id -state $state } }
+                if {$on} {
+                    catch { $can dtag $id st:hidden }
+                } else {
+                    catch { $can addtag st:hidden withtag $id }
+                }
+            }
+            set vis_cache($page,$t) $stamp
+        }
+    }
+
+    # Raw-canvas replacement for `dui item config` on plain text/shape
+    # options (-text, -fill, -outline). NOT for -state (_set_vis), not
+    # for scaled options (-width), not for dbutton -label/-state (those
+    # stay real dui calls). Unchanged option sets are skipped.
+    proc _cfg {page tag args} {
+        variable cfg_cache
+        if {[info exists cfg_cache($page,$tag)] && $cfg_cache($page,$tag) eq $args} { return }
+        set ids [_ids $page $tag]
+        if {$ids eq ""} { return }
+        set can ""
+        catch { set can [dui canvas] }
+        if {$can eq ""} { return }
+        foreach id $ids { catch { $can itemconfigure $id {*}$args } }
+        set cfg_cache($page,$tag) $args
+    }
+
+    # ------------------------------------------------------------------
     #  Vector icons (Pass 18). Stroke drawings on the page canvas:
     #  round-capped lines and hollow ovals in a 0..100 design box,
     #  mapped into a box sized to match the FA glyphs (L(vec_box_*)).
@@ -1731,9 +1844,9 @@ namespace eval ::plugins::MaintenanceTracker {
         set i 0
         foreach seg [dict get $vector_defs $name] {
             if {[lindex $seg 0] eq "oval"} {
-                catch { dui item config $page ${basetag}_s$i -outline $color }
+                _cfg $page ${basetag}_s$i -outline $color
             } else {
-                catch { dui item config $page ${basetag}_s$i -fill $color }
+                _cfg $page ${basetag}_s$i -fill $color
             }
             incr i
         }
@@ -1742,13 +1855,9 @@ namespace eval ::plugins::MaintenanceTracker {
     proc _show_vector_icon {page basetag name show} {
         variable vector_defs
         set n [llength [dict get $vector_defs $name]]
-        for {set i 0} {$i < $n} {incr i} {
-            if {$show} {
-                catch { dui item show $page ${basetag}_s$i -initial 1 }
-            } else {
-                catch { dui item hide $page ${basetag}_s$i -initial 1 }
-            }
-        }
+        set tags {}
+        for {set i 0} {$i < $n} {incr i} { lappend tags ${basetag}_s$i }
+        _set_vis $page $tags $show
     }
 
     # v0.18.0: human-readable names for every picker icon, shown next
@@ -1796,7 +1905,7 @@ namespace eval ::plugins::MaintenanceTracker {
     proc _apply_item_icon {page dtext_tag vbase id color} {
         set iname [_item_icon_name $id]
         if {[_is_vector_icon $iname]} {
-            catch { dui item hide $page $dtext_tag -initial 1 }
+            _set_vis $page [list $dtext_tag] 0
             foreach {vtag vname} {vsw steam-wand vgf gasket-flat} {
                 if {$vname eq $iname} {
                     _show_vector_icon $page ${vbase}_$vtag $vname 1
@@ -1809,8 +1918,8 @@ namespace eval ::plugins::MaintenanceTracker {
             foreach {vtag vname} {vsw steam-wand vgf gasket-flat} {
                 _show_vector_icon $page ${vbase}_$vtag $vname 0
             }
-            catch { dui item show $page $dtext_tag -initial 1 }
-            catch { dui item config $page $dtext_tag -text [_item_glyph $id] -fill $color }
+            _set_vis $page [list $dtext_tag] 1
+            _cfg $page $dtext_tag -text [_item_glyph $id] -fill $color
         }
     }
 
@@ -2558,6 +2667,151 @@ namespace eval ::plugins::MaintenanceTracker {
         }
     }
 
+    # ------------------------------------------------------------------
+    #  Linked profile (Pass 26, v0.22.0). A tracker may remember one
+    #  profile (filename + title, the DrinkMenu "use current" capture)
+    #  and its Detail page offers to load it -- the owner's backflush
+    #  alert becomes: wrench, card, Load profile, GHC button. Loading
+    #  copies DrinkMenu v1.16.0's To-machine tap (tablet-verified):
+    #  busy guard, ::select_profile <filename> (core vars.tcl:2932),
+    #  then the 1 s debounced save_settings + save_settings_to_de1.
+    #  Nothing here starts a flow. Link / Unlink write the item dict
+    #  through the plugin's own save path; status_summary builds its
+    #  entries from named keys, so its frozen shape is unaffected.
+    # ------------------------------------------------------------------
+
+    # The outcome shown in the Detail page's message slot, and the
+    # timers behind it.
+    variable prof_note ""
+    variable prof_note_id ""
+    variable prof_send_id ""
+
+    # {filename title} or "" when the tracker links no profile.
+    proc _item_profile {id} {
+        variable settings
+        if {![info exists settings(item_$id)]} { return "" }
+        set d $settings(item_$id)
+        if {![dict exists $d profile_fn]} { return "" }
+        set fn [string trim [dict get $d profile_fn]]
+        if {$fn eq ""} { return "" }
+        set title $fn
+        catch {
+            set t [string trim [dict get $d profile_title]]
+            if {$t ne ""} { set title $t }
+        }
+        return [list $fn $title]
+    }
+
+    # Ellipsis cut for one-line value cells (pure).
+    proc _short_text {s max} {
+        if {[string length $s] <= $max} { return $s }
+        return "[string range $s 0 [expr {$max - 4}]]..."
+    }
+
+    proc _set_prof_note {txt} {
+        variable prof_note
+        variable prof_note_id
+        set prof_note $txt
+        catch { after cancel $prof_note_id }
+        set prof_note_id [after 4000 ::plugins::MaintenanceTracker::_clear_prof_note]
+    }
+
+    proc _clear_prof_note {} {
+        variable prof_note
+        set prof_note ""
+        if {[_page_is_current MaintenanceTracker_detail]} {
+            if {[catch { ::dui::pages::MaintenanceTracker_detail::refresh } err]} {
+                catch { msg "MaintenanceTracker: detail refresh failed: $err" }
+            }
+        }
+    }
+
+    # DrinkMenu's _machine_busy, copied: "" when a tap may change the
+    # loaded profile, else the state name that refuses it.
+    proc _machine_busy {} {
+        set handle unknown
+        catch { set handle $::de1(device_handle) }
+        if {$handle eq "0"} { return "" }
+        set name unknown
+        catch { set name $::de1_num_state($::de1(state)) }
+        if {$name in {Idle Sleep GoingToSleep}} { return "" }
+        return $name
+    }
+
+    proc link_profile {id} {
+        variable settings
+        if {![info exists settings(item_$id)]} { return 0 }
+        set fn ""
+        catch { set fn [string trim $::settings(profile_filename)] }
+        if {$fn eq ""} {
+            _set_prof_note [translate "No profile is loaded in the app. Pick one in the profile list first."]
+            return 0
+        }
+        set title $fn
+        catch {
+            set t [string trim $::settings(profile_title)]
+            if {$t ne ""} { set title $t }
+        }
+        set d $settings(item_$id)
+        dict set d profile_fn [string range $fn 0 127]
+        dict set d profile_title [string range $title 0 79]
+        set settings(item_$id) $d
+        save_settings
+        catch { msg "MaintenanceTracker: linked profile '$fn' to '$id'" }
+        _set_prof_note "[translate {Linked:}] $title"
+        return 1
+    }
+
+    proc unlink_profile {id} {
+        variable settings
+        if {![info exists settings(item_$id)]} { return 0 }
+        set d $settings(item_$id)
+        if {![dict exists $d profile_fn]} { return 0 }
+        dict unset d profile_fn
+        dict unset d profile_title
+        set settings(item_$id) $d
+        save_settings
+        catch { msg "MaintenanceTracker: unlinked the profile from '$id'" }
+        _set_prof_note [translate "Profile unlinked."]
+        return 1
+    }
+
+    # Public: load the tracker's linked profile into the app (the
+    # machine receives it on the debounced send). Returns 1 on success.
+    proc load_linked_profile {id} {
+        variable prof_send_id
+        set prof [_item_profile $id]
+        if {$prof eq ""} { return 0 }
+        lassign $prof fn title
+        set busy [_machine_busy]
+        if {$busy ne ""} {
+            _set_prof_note "[translate {Machine busy}] ($busy). [translate {Wait until it is idle.}]"
+            return 0
+        }
+        set r ""
+        if {[catch { set r [::select_profile $fn] } err]} {
+            catch { msg "MaintenanceTracker: select_profile '$fn' failed: $err" }
+            _set_prof_note [translate "Could not load the profile (see the log)."]
+            return 0
+        }
+        if {$r eq "-1"} {
+            _set_prof_note [translate "Profile file missing. Unlink and link it again."]
+            return 0
+        }
+        catch { after cancel $prof_send_id }
+        set prof_send_id [after 1000 {
+            if {[catch {
+                save_settings
+                save_settings_to_de1
+            } err]} {
+                catch { msg "MaintenanceTracker: could not send the machine settings: $err" }
+            }
+        }]
+        catch { msg "MaintenanceTracker: loaded linked profile '$fn' for '$id'" }
+        _set_prof_note "[translate {Loaded:}] $title. [translate {Press the espresso button on the machine.}]"
+        return 1
+    }
+
     # Delete one CUSTOM tracker: unlist it and remove its item dict, both
     # before a single save. The removed dict is kept (newest only) in
     # settings(last_deleted_custom) -- save_array_to_file writes the whole
@@ -2725,7 +2979,7 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                 -font $L(font_icon_plate) -fill $L(col_unset) -anchor center -justify center
             # v0.17.0: each plate also carries both vector icons, born
             # hidden; refresh shows at most one (the framework's own
-            # stacked-but-exclusive mechanism, like bar_hide/bar_delete
+            # stacked-but-exclusive mechanism, like mt_hide/bar_delete
             # was). Tags row<i>_vsw_s* / row<i>_vgf_s*.
             ::plugins::MaintenanceTracker::_add_vector_icon $page row${i}_vsw steam-wand \
                 [expr {($plate_x1 + $plate_x2) / 2}] [expr {$plate_y1 + $L(plate_size) / 2}] \
@@ -2791,8 +3045,13 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
         # right. All three fit with room to spare: Done ends at lx+400,
         # the wide center button spans cx +/- 240, Diagnostics starts at
         # rx-400 (virtual px) -- every gap is far beyond the md minimum.
+        # v0.21.2: mt_ prefix on tags that DrinkMenu also used (done/
+        # back/cancel/save/hide). Tk canvas tags are canvas-GLOBAL, and
+        # the core's press flash (dui.tcl:9181) itemconfigures by bare
+        # <tag>-btn -- a same-named pressfill button in ANY plugin
+        # repaints ours to its color on every press.
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_done -label [translate "Done"] \
+            -tags mt_done -label [translate "Done"] \
             -command ::plugins::MaintenanceTracker::page_done \
             -label_font $L(font_button) -style mt_btn
         dui add dbutton $page [expr {$cx - $L(btn_w_wide) / 2}] $L(bar_y0) \
@@ -2868,6 +3127,7 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
         upvar #0 ::plugins::MaintenanceTracker::L L
         variable card_page_size
         variable card_page
+        set _t0 [clock milliseconds]
 
         set s [::plugins::MaintenanceTracker::status_summary]
 
@@ -2915,29 +3175,30 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
         } elseif {[dict exists $s ok] && [dict get $s ok]} {
             append status "   ·   [translate {Shot database unavailable -- see Diagnostics}]"
         }
-        dui item config $page toolbar_status -text $status
+        ::plugins::MaintenanceTracker::_cfg $page toolbar_status -text $status
 
         # v0.19.0: theme button face follows the current theme.
+        # (dbutton -label stays a real dui call: label sub-item mapping.)
         catch { dui item config $page btn_theme \
             -label [::plugins::MaintenanceTracker::_theme_button_face] }
 
-        # Cards (Pass 10 Service Bay render).
+        # Cards (Pass 10 Service Bay render; Pass 23 cached-canvas path:
+        # _set_vis/_cfg keep the v0.10.1 st:hidden semantics -- see the
+        # helper block -- while skipping dui's per-call tag resolution).
         for {set i 0} {$i < $card_page_size} {incr i} {
             if {$i < [llength $ids]} {
                 set id [lindex $ids $i]
-                # -initial 1 everywhere (v0.10.1): the framework re-shows
-                # every item without an st:hidden tag on EVERY page show,
-                # BEFORE the show{} callback runs this refresh -- without
-                # -initial, items hidden here flashed for one paint on
-                # each page entry (de1app-core/dui.tcl:6615,7987-8010).
-                foreach tag {bg plate icon line1 state cnt line3 tick} {
-                    catch { dui item show $page row${i}_$tag -initial 1 }
+                # row icon is owned by _apply_item_icon below (glyph OR
+                # vector), so it is not in the blanket show list.
+                set vtags {}
+                foreach tag {bg plate line1 state cnt line3 tick} {
+                    lappend vtags row${i}_$tag
                 }
                 for {set j 0} {$j < $L(bar_segs)} {incr j} {
-                    catch { dui item show $page row${i}_seg${j} -initial 1 }
+                    lappend vtags row${i}_seg${j}
                 }
-                catch { dui item show $page row${i}_btn* -initial 1 }
-                catch { dui item show $page row${i}_open* -initial 1 }
+                lappend vtags row${i}_btn* row${i}_open*
+                ::plugins::MaintenanceTracker::_set_vis $page $vtags 1
 
                 if {[dict exists $s items $id]} {
                     set entry [dict get $s items $id]
@@ -2950,11 +3211,11 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                 set tint $L(tint_unknown)
                 catch { set tint $L(tint_$state) }
 
-                dui item config $page row${i}_line1 \
+                ::plugins::MaintenanceTracker::_cfg $page row${i}_line1 \
                     -text [::plugins::MaintenanceTracker::_item_label $id]
-                catch { dui item config $page row${i}_state \
+                ::plugins::MaintenanceTracker::_cfg $page row${i}_state \
                     -text [string toupper [::plugins::MaintenanceTracker::_state_word $state]] \
-                    -fill $color }
+                    -fill $color
                 # v0.20.0: AUTO tag on trackers with an auto_src;
                 # v0.21.0: shots/ml trackers count by themselves too, so
                 # the tag now says WHICH automation this tracker has --
@@ -2963,20 +3224,20 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                 # maintenance stays manual). Fully manual = no tag.
                 switch -- [::plugins::MaintenanceTracker::_item_auto_kind $id] {
                     record {
-                        catch { dui item config $page row${i}_auto \
-                            -text [translate "AUTO-RECORD"] }
-                        catch { dui item show $page row${i}_auto -initial 1 }
+                        ::plugins::MaintenanceTracker::_cfg $page row${i}_auto \
+                            -text [translate "AUTO-RECORD"]
+                        ::plugins::MaintenanceTracker::_set_vis $page [list row${i}_auto] 1
                     }
                     count {
-                        catch { dui item config $page row${i}_auto \
-                            -text [translate "AUTO-COUNT"] }
-                        catch { dui item show $page row${i}_auto -initial 1 }
+                        ::plugins::MaintenanceTracker::_cfg $page row${i}_auto \
+                            -text [translate "AUTO-COUNT"]
+                        ::plugins::MaintenanceTracker::_set_vis $page [list row${i}_auto] 1
                     }
                     default {
-                        catch { dui item hide $page row${i}_auto -initial 1 }
+                        ::plugins::MaintenanceTracker::_set_vis $page [list row${i}_auto] 0
                     }
                 }
-                catch { dui item config $page row${i}_plate -fill $tint -outline $tint }
+                ::plugins::MaintenanceTracker::_cfg $page row${i}_plate -fill $tint -outline $tint
                 # v0.17.0 vector swap, v0.18.0 factored into the shared
                 # renderer (the Detail page header uses it too).
                 ::plugins::MaintenanceTracker::_apply_item_icon $page \
@@ -3022,9 +3283,9 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                         set frac [expr {double($value) / $threshold}]
                     }
                 }
-                catch { dui item config $page row${i}_cnt -text $cnt \
-                    -fill [expr {$state in {amber red} ? $color : $L(text_hi)}] }
-                dui item config $page row${i}_line3 -text $cap
+                ::plugins::MaintenanceTracker::_cfg $page row${i}_cnt -text $cnt \
+                    -fill [expr {$state in {amber red} ? $color : $L(text_hi)}]
+                ::plugins::MaintenanceTracker::_cfg $page row${i}_line3 -text $cap
 
                 set nfill [expr {int(round($frac * $L(bar_segs)))}]
                 if {$nfill > $L(bar_segs)} { set nfill $L(bar_segs) }
@@ -3032,38 +3293,46 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
                 if {$frac > 0 && $nfill == 0} { set nfill 1 }
                 for {set j 0} {$j < $L(bar_segs)} {incr j} {
                     set c [expr {$j < $nfill ? $color : $L(bar_track)}]
-                    catch { dui item config $page row${i}_seg${j} -fill $c -outline $c }
+                    ::plugins::MaintenanceTracker::_cfg $page row${i}_seg${j} -fill $c -outline $c
                 }
             } else {
+                set vtags {}
                 foreach tag {bg plate icon line1 state cnt line3 tick auto} {
-                    catch { dui item hide $page row${i}_$tag -initial 1 }
+                    lappend vtags row${i}_$tag
                 }
+                for {set j 0} {$j < $L(bar_segs)} {incr j} {
+                    lappend vtags row${i}_seg${j}
+                }
+                lappend vtags row${i}_btn* row${i}_open*
+                ::plugins::MaintenanceTracker::_set_vis $page $vtags 0
                 foreach {vtag vname} {vsw steam-wand vgf gasket-flat} {
                     ::plugins::MaintenanceTracker::_show_vector_icon $page row${i}_$vtag $vname 0
                 }
-                for {set j 0} {$j < $L(bar_segs)} {incr j} {
-                    catch { dui item hide $page row${i}_seg${j} -initial 1 }
-                }
-                catch { dui item hide $page row${i}_btn* -initial 1 }
-                catch { dui item hide $page row${i}_open* -initial 1 }
             }
         }
 
-        # Prev/Next enabled only where a page exists (GFC -state pattern).
+        # Prev/Next enabled only where a page exists (GFC -state pattern;
+        # dbutton -state stays a real dui call, it restyles the label too).
         set last_page [expr {($n - 1) / $card_page_size}]
         catch { dui item config $page prev_page* -state [expr {$card_page > 0 ? "normal" : "disabled"}] }
         catch { dui item config $page next_page* -state [expr {$card_page < $last_page ? "normal" : "disabled"}] }
+
+        if {$::plugins::MaintenanceTracker::debug_timing} {
+            catch { msg "MaintenanceTracker: settings refresh [expr {[clock milliseconds] - $_t0}] ms" }
+        }
     }
 
     proc show {page_to_hide page_to_show} {
         # Any arrival at the main page clears the pending-record flag and
         # the detail confirm mode (a stuck flag must never survive a page
-        # switch) and shows fresh counts (opening the page is a user
-        # action).
+        # switch). Pass 23: no forced cache invalidation here -- every
+        # mutating path (record/confirm, auto-record, add/edit/delete)
+        # already calls _invalidate_status_cache, machine events do too,
+        # and the 600 s TTL covers long-idle staleness; re-running the
+        # full SDB pass on every arrival made Done/Back taps lag.
         set ::plugins::MaintenanceTracker::pending_item ""
         set ::plugins::MaintenanceTracker::detail_mode view
         set ::plugins::MaintenanceTracker::edit_delete_armed 0
-        set ::plugins::MaintenanceTracker::status_dirty 1
         ::plugins::MaintenanceTracker::_capture_return_page $page_to_hide
         if {[catch { refresh } err]} {
             catch { msg "MaintenanceTracker: settings refresh failed: $err" }
@@ -3106,7 +3375,7 @@ namespace eval ::dui::pages::MaintenanceTracker_confirm {
             -anchor center -justify center
 
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_cancel -label [translate "Cancel"] \
+            -tags mt_cancel -label [translate "Cancel"] \
             -command ::plugins::MaintenanceTracker::cancel_record \
             -label_font $L(font_button) -style mt_btn
         dui add dbutton $page [expr {$rx - $L(btn_w_std)}] $L(bar_y0) $rx $L(bar_y1) \
@@ -3204,7 +3473,7 @@ namespace eval ::dui::pages::MaintenanceTracker_confirm_burr {
             -anchor center -justify center
 
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_cancel -label [translate "Cancel"] \
+            -tags mt_cancel -label [translate "Cancel"] \
             -command ::plugins::MaintenanceTracker::cancel_record \
             -label_font $L(font_button) -style mt_btn
         dui add dbutton $page [expr {$rx - $L(btn_w_std)}] $L(bar_y0) $rx $L(bar_y1) \
@@ -3283,7 +3552,7 @@ namespace eval ::dui::pages::MaintenanceTracker_confirm_bottle {
             -anchor center -justify center
 
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_cancel -label [translate "Cancel"] \
+            -tags mt_cancel -label [translate "Cancel"] \
             -command ::plugins::MaintenanceTracker::cancel_record \
             -label_font $L(font_button) -style mt_btn
         dui add dbutton $page [expr {$rx - $L(btn_w_std)}] $L(bar_y0) $rx $L(bar_y1) \
@@ -3386,8 +3655,44 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
                 -anchor nw -justify left
         }
 
+        # v0.22.0: linked-profile row between the history and the
+        # message slot. Label / value on the label-value grid, buttons
+        # right-aligned at 520..580 ref px: linked -> [Unlink] md [Load
+        # profile]; unlinked -> [Link current profile]. The last event
+        # line's glyphs end ~493, the message slot (moved 600 -> 624,
+        # two lines 599..649) still clears the bar at 716. All three
+        # buttons are born hidden; refresh shows the right pair and
+        # hides them all while an undo is armed.
+        set prof_y0 [expr {int(round(520 * $L(scale)))}]
+        set prof_y1 [expr {$prof_y0 + $L(btn_h)}]
+        set prof_mid [expr {($prof_y0 + $prof_y1) / 2}]
+        set load_x0 [expr {$rx - $L(btn_w_wide)}]
+        set unlink_x1 [expr {$load_x0 - $L(md)}]
+        set unlink_x0 [expr {$unlink_x1 - $L(btn_w_std)}]
+        set link_x0 [expr {$rx - $L(btn_w_xwide)}]
+        dui add dtext $page $lx $prof_mid -tags prof_label \
+            -text [translate "Profile:"] \
+            -font $L(font_body) -width $L(label_col_w) -fill $L(text_body) \
+            -anchor w -justify left
+        dui add dtext $page $L(value_x) $prof_mid -tags prof_value -text "" \
+            -font $L(font_primary) -width [expr {$unlink_x0 - $L(lg) - $L(value_x)}] \
+            -fill $L(text_hi) -anchor w -justify left
+        dui add dbutton $page $unlink_x0 $prof_y0 $unlink_x1 $prof_y1 \
+            -tags mt_unlink -label [translate "Unlink"] \
+            -command ::dui::pages::MaintenanceTracker_detail::unlink_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $load_x0 $prof_y0 $rx $prof_y1 \
+            -tags mt_load -label [translate "Load profile"] \
+            -command ::dui::pages::MaintenanceTracker_detail::load_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $link_x0 $prof_y0 $rx $prof_y1 \
+            -tags mt_link -label [translate "Link current profile"] \
+            -command ::dui::pages::MaintenanceTracker_detail::link_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+
         # Confirm-mode message (empty in view mode), above the bottom bar.
-        set confirm_y [expr {int(round(600 * $L(scale)))}]
+        # v0.22.0: also the linked-profile outcome note for 4 s.
+        set confirm_y [expr {int(round(624 * $L(scale)))}]
         dui add dtext $page $cx $confirm_y -tags confirm_msg -text "" \
             -font $L(font_primary) -width $L(content_w) -fill $L(col_red) \
             -anchor center -justify center
@@ -3407,7 +3712,7 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             -label_font $L(font_button) -style mt_btn
         dui add dbutton $page [expr {$cx - $L(btn_w_xwide) / 2}] $L(bar_y0) \
             [expr {$cx + $L(btn_w_xwide) / 2}] $L(bar_y1) \
-            -tags bar_hide -label [translate "Hide Tracker"] \
+            -tags mt_hide -label [translate "Hide Tracker"] \
             -command ::dui::pages::MaintenanceTracker_detail::hide_click \
             -label_font $L(font_button) -style mt_btn -initial_state hidden
         dui add dbutton $page [expr {$rx - $L(btn_w_xwide)}] $L(bar_y0) $rx $L(bar_y1) \
@@ -3432,8 +3737,12 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
                 catch { dui item config $page ev$i -text "" }
             }
             catch { dui item hide $page bar_undo* -initial 1 }
-            catch { dui item hide $page bar_hide* -initial 1 }
+            catch { dui item hide $page mt_hide* -initial 1 }
             catch { dui item hide $page btn_edit* -initial 1 }
+            foreach t {mt_link* mt_unlink* mt_load*} {
+                catch { dui item hide $page $t -initial 1 }
+            }
+            catch { dui item config $page prof_value -text "" }
             catch { dui item config $page bar_left -label [translate "Back"] }
             catch { dui item hide $page det_plate* -initial 1 }
             catch { dui item hide $page det_icon -initial 1 }
@@ -3539,8 +3848,13 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             # warning, not just the message text above it.
             catch { dui item config $page bar_undo -label [translate "Yes, Delete Last Record"] }
             catch { dui item show $page bar_undo* -initial 1 }
-            catch { dui item hide $page bar_hide* -initial 1 }
+            catch { dui item hide $page mt_hide* -initial 1 }
             catch { dui item hide $page btn_edit* -initial 1 }
+            # v0.22.0: the profile row's controls step aside too.
+            foreach t {mt_link* mt_unlink* mt_load*} {
+                catch { dui item hide $page $t -initial 1 }
+            }
+            catch { dui item config $page prof_value -text "" }
         } else {
             catch { dui item config $page bar_left -label [translate "Back"] }
             catch { dui item config $page bar_undo -label [translate "Undo Last Record"] }
@@ -3553,19 +3867,64 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             # the cap, with the reason spelled out where the armed-
             # confirm message otherwise lives (grey -- informational).
             catch { dui item show $page btn_edit* -initial 1 }
-            catch { dui item show $page bar_hide* -initial 1 }
+            catch { dui item show $page mt_hide* -initial 1 }
             set hidden_n 0
             catch { set hidden_n [llength $::plugins::MaintenanceTracker::settings(hidden_ids)] }
             if {$hidden_n >= $::plugins::MaintenanceTracker::hide_max \
                     && $id ni $::plugins::MaintenanceTracker::settings(hidden_ids)} {
-                catch { dui item config $page bar_hide* -state disabled }
+                catch { dui item config $page mt_hide* -state disabled }
                 catch { dui item config $page confirm_msg \
                     -text [translate "Hide is unavailable: six trackers are already hidden. Restore one from the New Tracker page first."] \
                     -fill $L(text_mut) }
+            } elseif {$::plugins::MaintenanceTracker::prof_note ne ""} {
+                # v0.22.0: the linked-profile outcome (Load / Link /
+                # Unlink), cleared by its own 4 s timer.
+                catch { dui item config $page mt_hide* -state normal }
+                catch { dui item config $page confirm_msg \
+                    -text $::plugins::MaintenanceTracker::prof_note -fill $L(text_hi) }
             } else {
-                catch { dui item config $page bar_hide* -state normal }
+                catch { dui item config $page mt_hide* -state normal }
                 catch { dui item config $page confirm_msg -text "" }
             }
+            # v0.22.0: linked profile row.
+            set prof [::plugins::MaintenanceTracker::_item_profile $id]
+            if {$prof eq ""} {
+                catch { dui item config $page prof_value \
+                    -text [translate "none linked"] -fill $L(text_mut) }
+                catch { dui item hide $page mt_unlink* -initial 1 }
+                catch { dui item hide $page mt_load* -initial 1 }
+                catch { dui item show $page mt_link* -initial 1 }
+            } else {
+                catch { dui item config $page prof_value \
+                    -text [::plugins::MaintenanceTracker::_short_text [lindex $prof 1] 28] \
+                    -fill $L(text_hi) }
+                catch { dui item hide $page mt_link* -initial 1 }
+                catch { dui item show $page mt_unlink* -initial 1 }
+                catch { dui item show $page mt_load* -initial 1 }
+            }
+        }
+    }
+
+    # v0.22.0: linked-profile controls, view mode only.
+    proc link_click {} {
+        if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
+        ::plugins::MaintenanceTracker::link_profile $::plugins::MaintenanceTracker::detail_item
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
+        }
+    }
+    proc unlink_click {} {
+        if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
+        ::plugins::MaintenanceTracker::unlink_profile $::plugins::MaintenanceTracker::detail_item
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
+        }
+    }
+    proc load_click {} {
+        if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
+        ::plugins::MaintenanceTracker::load_linked_profile $::plugins::MaintenanceTracker::detail_item
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
         }
     }
 
@@ -3794,11 +4153,11 @@ namespace eval ::dui::pages::MaintenanceTracker_add {
 
         # Bottom bar: Cancel left, Add Tracker right.
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_cancel -label [translate "Cancel"] \
+            -tags mt_cancel -label [translate "Cancel"] \
             -command ::plugins::MaintenanceTracker::cancel_add \
             -label_font $L(font_button) -style mt_btn
         dui add dbutton $page [expr {$rx - $L(btn_w_wide)}] $L(bar_y0) $rx $L(bar_y1) \
-            -tags bar_save -label [translate "Save"] \
+            -tags mt_save -label [translate "Save"] \
             -command ::plugins::MaintenanceTracker::add_save \
             -label_font $L(font_button) -style mt_btn
     }
@@ -4032,7 +4391,7 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
         # here, one deliberate level below Detail), Save (right, the
         # page's one positive action, hidden while delete is armed).
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_cancel -label [translate "Cancel"] \
+            -tags mt_cancel -label [translate "Cancel"] \
             -command ::plugins::MaintenanceTracker::cancel_edit \
             -label_font $L(font_button) -style mt_btn
         set cx2 [expr {($lx + $rx) / 2}]
@@ -4042,7 +4401,7 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
             -command ::dui::pages::MaintenanceTracker_edit::delete_click \
             -label_font $L(font_button) -style mt_btn_danger -initial_state hidden
         dui add dbutton $page [expr {$rx - $L(btn_w_std)}] $L(bar_y0) $rx $L(bar_y1) \
-            -tags bar_save -label [translate "Save"] \
+            -tags mt_save -label [translate "Save"] \
             -command ::plugins::MaintenanceTracker::edit_save \
             -label_font $L(font_button) -style mt_btn
     }
@@ -4087,7 +4446,7 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
                 -text "[translate {Delete the tracker}] \"$label\" [translate {and its recorded history?}]" }
             catch { dui item config $page bar_delete -label [translate "Yes, Delete Tracker"] }
             catch { dui item show $page bar_delete* -initial 1 }
-            catch { dui item hide $page bar_save* -initial 1 }
+            catch { dui item hide $page mt_save* -initial 1 }
         } else {
             catch { dui item config $page edit_error_text \
                 -text $::plugins::MaintenanceTracker::edit_error }
@@ -4097,7 +4456,7 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
             } else {
                 catch { dui item hide $page bar_delete* -initial 1 }
             }
-            catch { dui item show $page bar_save* -initial 1 }
+            catch { dui item show $page mt_save* -initial 1 }
         }
     }
 
@@ -4202,7 +4561,7 @@ namespace eval ::dui::pages::MaintenanceTracker_diagnostics {
 
         # Bottom bar: Back, left slot.
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
-            -tags bar_back -label [translate "Back"] \
+            -tags mt_back -label [translate "Back"] \
             -command ::plugins::MaintenanceTracker::diagnostics_back \
             -label_font $L(font_button) -style mt_btn
     }

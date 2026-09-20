@@ -4,6 +4,88 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.22.0 - 2026-09-18 - Pass 26: linked profile per tracker - verify.sh PASS 2026-09-18 12:2x (settings, detail, diagnostics dumps: no text overlap, inside the virtual canvas; logcat clean; tap behaviour proven offline, owner checklist open)
+
+Base: v0.21.3 (tablet-verified). Owner request: a backflush alert should
+offer the cleaning profile instead of a trip through the app's chooser.
+
+- Detail page: a "Profile:" row under the history (buttons at 520..580
+  ref px, the message slot moved 600 -> 624). Unlinked: "Link current
+  profile" stores `::settings(profile_filename)` + `profile_title` in the
+  tracker's item dict (DrinkMenu's "use current" capture). Linked: the
+  title, "Unlink", and "Load profile" -- DrinkMenu v1.16.0's To-machine
+  tap copied: busy guard, `::select_profile <fn>`, `-1` = file missing,
+  1 s debounced `save_settings; save_settings_to_de1`. The row's buttons
+  hide while an undo is armed. Outcomes show in the message slot for 4 s.
+- `status_summary` shape unchanged (entries are built from named keys).
+
+**Safety status: two NEW settings.tdb writes, each on an explicit tap
+(Link current profile, Unlink) through the existing `save_settings` path;
+Load profile changes the app's loaded profile via the core's own
+`select_profile` and never starts a flow. SDB stays read-only; history/
+untouched.**
+
+Files: plugin.tcl, MaintenanceTracker.tcl, README, CHANGELOG, PROJECT_STATE,
+passes/MaintenanceTracker/pass_26.*.
+
+## v0.21.3 - 2026-09-15 - Pass 25: idempotent SDB close
+
+Base: v0.21.2 (tablet-verified). Tablet log 2026-09-15 21:44:39:
+`ERROR: BLE error info invalid command name "::plugins::MaintenanceTracker::sdb"`
+while executing `$db_handle close`.
+
+- Cause: `_close_db` ran a bare `catch { $db_handle close }`. The handle
+  is closed after every refresh and closed again before every open, so
+  the second close failed every refresh; catch swallowed the error but
+  left `$::errorInfo` dirty, and the core BLE runner prints `$::errorInfo`
+  whenever a queued command returns non-1 (de1_comms.tcl:120).
+- Fix: `_close_db` closes only when `info commands $db_handle` exists and
+  logs a real close failure via `msg` instead of hiding it. Both close
+  sites (before open in `_open_ro_db`, after refresh in `_refresh_status`)
+  go through it; no code path touches the handle after close.
+
+**Safety status: no write behavior changes; SDB stays read-only.**
+
+Files: plugin.tcl, MaintenanceTracker.tcl, README, CHANGELOG, PROJECT_STATE.
+
+## v0.21.2 - 2026-09-03 - Pass 24: unique button tags (DrinkMenu press bleed)
+
+Base: v0.21.1 (tablet-verified). Owner report: after visiting DrinkMenu,
+MT's Done button wore DrinkMenu's yellow until a theme toggle.
+
+- Cause: Tk canvas tags are canvas-global and the core's press flash
+  (dui.tcl:9181) itemconfigures bare `<tag>-btn` -- pressing DrinkMenu's
+  `bar_done` (style with -pressfill) repainted every `bar_done-btn` on
+  the canvas, including ours, restoring to DrinkMenu's fill.
+- Fix: the five tags both plugins used are now mt_-prefixed: mt_done,
+  mt_back, mt_cancel, mt_save, mt_hide (creation, retheme list, detail
+  mode show/hide, edit-page delete/save toggle). No other tag collides
+  with any installed plugin's pressfill-styled buttons.
+
+**Safety status: no write behavior changes; canvas tag rename only.**
+
+Files: plugin.tcl, MaintenanceTracker.tcl, README, CHANGELOG, PROJECT_STATE.
+
+## v0.21.1 - 2026-09-03 - Pass 23: main-page tap responsiveness
+
+Base: v0.21.0. Owner report: buttons lag. Same disease DrinkMenu v0.6.2
+measured (~1 ms per `dui item` call; the card refresh made ~330).
+
+- DrinkMenu's cached-canvas mechanism ported: `_ids` (canvas ids resolved
+  once), `_set_vis` (raw show/hide keeping `st:hidden` in sync), `_cfg`
+  (dedup'd itemconfigure). Settings-page refresh, vector icons and
+  `_apply_item_icon` (Detail header too) now render through them.
+- SDB schema detection cached per session (`_schema_cache`); dropped and
+  re-detected on any read error.
+- Main page `show{}` no longer forces a full SDB pass: every mutating path
+  already invalidates, machine events too, 600 s TTL backstop. Diagnostics
+  keeps fresh-on-open. Timing line behind `debug_timing` (default 0).
+
+**Safety status: no write behavior changes; internal rendering + read-path
+caching only. SDB stays read-only SELECT; history files never touched.**
+
+Files: plugin.tcl, MaintenanceTracker.tcl, README, CHANGELOG, PROJECT_STATE.
+
 ## v0.21.0 - 2026-09-01 - Pass 22: auto choice at creation + auto-count tags
 
 Base: v0.20.0 (owner-confirmed). Owner follow-ups.

@@ -8,7 +8,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.21.0** (Pass 22)
+Author: **Blastize** · Current version: **0.22.0** (Pass 26)
 
 ## What it will do (target design)
 
@@ -22,7 +22,23 @@ Author: **Blastize** · Current version: **0.21.0** (Pass 22)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.21.0 — Pass 22)
+## What it does right now (v0.22.0 — Pass 26)
+
+- **Linked profile** (v0.22.0): every tracker's Detail page has a
+  **Profile:** row. **Link current profile** remembers the profile
+  loaded in the app right now (load it once from the app's profile
+  list, then tap); **Unlink** forgets it; **Load profile** hands it
+  back to the app through the core's own `select_profile` (the same
+  call DrinkMenu makes) and sends it to the machine a second later.
+  It never starts a flow — the GHC does. So a Backflush alert is:
+  wrench, card, Load profile, press the machine's espresso button,
+  and the run auto-records as before (the profile must carry beverage
+  type `cleaning`). Refused while the machine is running anything;
+  the row's message line says what happened for four seconds.
+- **Fast taps** (v0.21.1): the main page renders through cached canvas
+  ids (DrinkMenu v0.6.2 mechanism) and plain navigation no longer
+  re-runs the shot-database pass — counts refresh when something
+  actually changed (recording, auto-detect, machine events, 10 min TTL).
 
 - **Auto source chosen at creation**: the New Tracker page has an
   "Auto: off / Clean cycle / Descale cycle" toggle in its top-right
@@ -216,7 +232,12 @@ Author: **Blastize** · Current version: **0.21.0** (Pass 22)
   Deleting is possible **only for custom trackers you created**, needs
   two taps, and the removed tracker is kept in the settings file under
   `last_deleted_custom` so a mistake is recoverable. There is no bulk
-  delete or reset anywhere.
+  delete or reset anywhere. v0.22.0 adds two more explicit taps that
+  save the file (Link current profile, Unlink: the tracker's own
+  `profile_fn` / `profile_title` keys) and one app-facing action
+  (Load profile: the core's `select_profile`, then `save_settings` +
+  `save_settings_to_de1`), which writes nothing of ours and starts no
+  flow.
 
 ## Install
 
