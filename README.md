@@ -1,5 +1,33 @@
 # Maintenance Tracker
 
+**Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
+Version 0.22.0 · a plugin for the Decent DE1app · by Blastize
+
+![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
+
+**Everything on one page.** Each tracker shows shots or days since it was last done and a bar that goes amber, then red. Backflush and descale record themselves when the machine runs a real clean or descale cycle.
+
+![Tracker detail: the record history and a linked profile with Load profile](docs/detail.png)
+
+**Tracker detail.** The history of records, undo for the last one, and a linked profile: tap Load profile and the cleaning profile is on the machine, ready for the run.
+
+![New Tracker: name, count by days, shots or ml, threshold and icon](docs/new_tracker.png)
+
+**Your own trackers.** A second grinder, a water tank clean, anything: name it, count by days, shots or millilitres, set the threshold, pick an icon.
+
+## Install
+
+Copy the folder to `de1plus/plugins/MaintenanceTracker/`, restart the app, enable **Maintenance Tracker** under Extensions. Needs the SDB plugin (ships with the app).
+
+## Safety
+
+Counters come from read-only queries of the shot database; it is never written. The only file the plugin writes is its own settings file. Load profile uses the app's own profile call and never starts a flow.
+
+<details>
+<summary><b>Full reference and version notes</b></summary>
+
+## Reference
+
 A DE1app plugin that tracks espresso machine and grinder maintenance:
 backflush, descale, group gasket replacement, burr cleaning, burr
 installation (with a pre-history shot-count offset), water filter
@@ -257,3 +285,5 @@ the DE1app by hand and enable it under Settings → App → Extensions.
   settings page, public API.
 - `filelist.txt`, `README.md`, `CHANGELOG.md` — docs.
 - `settings.tdb` — created at runtime by the app; not part of the package.
+
+</details>
