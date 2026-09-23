@@ -15,6 +15,14 @@ Version 0.23.1 · a plugin for the Decent DE1app · by Blastize
 
 **Your own trackers.** A second grinder, a water tank clean, anything: name it, count by days, shots or millilitres, set the threshold, pick an icon.
 
+## Recommended: the Lumen skin
+
+![The Lumen taskbar: the wrench icon wears an amber dot because a tracker is due soon](docs/lumen_wrench.png)
+
+Maintenance Tracker is built to remind you, and it works best with the [Lumen skin](https://github.com/Blastize/de1app-skin-Lumen). Lumen puts a **wrench** on its home-screen taskbar that wears an **amber dot** when a tracker is due soon and a **red dot** when one is overdue, so you see it without opening anything. One tap on the wrench opens the tracker list. Without Lumen the plugin still works, but you reach it through the app's Settings, Extensions and the plugin's settings button, and nothing tells you when something is due.
+
+Both are in the [de1app-toolkit](https://github.com/Blastize/de1app-toolkit) download.
+
 ## Install
 
 Copy the folder to `de1plus/plugins/MaintenanceTracker/`, restart the app, enable **Maintenance Tracker** under Extensions. Needs the SDB plugin (ships with the app).
