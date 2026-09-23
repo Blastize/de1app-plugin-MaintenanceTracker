@@ -7,7 +7,7 @@ Version 0.23.1 · a plugin for the Decent DE1app · by Blastize
 
 **Everything on one page.** Each tracker shows shots or days since it was last done and a bar that goes amber, then red. Backflush and descale record themselves when the machine runs a real clean or descale cycle.
 
-![Tracker detail: the record history and a linked profile with Load profile](docs/detail.png)
+![Tracker detail: the record history and a link to the app's Descale, with Unlink and Open Descale](docs/detail.png)
 
 **Tracker detail.** The history of records, undo for the last one, and a link: a profile (tap Load profile and it is on the machine, ready for the run), or the app's own Descale or Clean action.
 
