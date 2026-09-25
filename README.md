@@ -1,7 +1,7 @@
 # Maintenance Tracker
 
 **Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
-Version 0.24.0 · a plugin for the Decent DE1app · by Blastize
+Version 0.24.1 · a plugin for the Decent DE1app · by Blastize
 
 ![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
 
@@ -44,7 +44,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.24.0** (Pass 29)
+Author: **Blastize** · Current version: **0.24.1** (Pass 30)
 
 ## What it will do (target design)
 
@@ -58,8 +58,12 @@ Author: **Blastize** · Current version: **0.24.0** (Pass 29)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.24.0 — Pass 29)
+## What it does right now (v0.24.1 — Pass 30)
 
+- **Missing profile files are caught** (v0.24.1): Load profile first checks the
+  linked profile's file still exists in `profiles/`; if not, it says "Profile
+  file missing. Unlink and link it again." and leaves the app's profile alone.
+  Link profile refuses a loaded profile that has no saved file.
 - **A linked cleaning profile records its own tracker** (v0.24.0): when a
   run of a `cleaning` profile finishes, the trackers linked to *that*
   profile auto-record — and only those, even with their Auto-record

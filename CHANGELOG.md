@@ -4,6 +4,23 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.24.1 - 2026-09-25 - Pass 30: Load / Link profile refuse a missing profile file - verify.sh PASS 2026-09-25 on run 1 (three page dumps + logcat clean; owner checklist open)
+
+Base: v0.24.0. Owner, 2026-09-25 16:26: Load profile on "Backflush - Water" (linked
+`Cleaning_forward_flush_x5`, no such file) said "Loaded"; the run went out as "Gentle and
+sweet". The core's select_profile resets part of ::settings before its file check
+(vars.tcl:2932-2960) and Graphical_Flow_Calibrator's wrapper drops its "-1", so MT's
+return-value guard never fired and MT saved + sent the half-reset profile.
+
+- New `_profile_file_exists` (`[homedir]/profiles/<fn>.tcl`, the path select_profile loads).
+- Load profile: missing file -> note "Profile file missing. Unlink and link it again.", WARN
+  log; select_profile is not called, nothing saved or sent, the link is kept for relinking.
+- Link profile: a loaded profile without a file is refused ("No saved file for this profile.").
+- pass_30_offline.tcl (GFC-style wrapper stub) FAILS on v0.24.0 (12 checks), PASSES here.
+
+**Safety status: no write behavior added; one path removed (Load no longer saves/sends when
+the file is missing). Profile files are only tested for existence / read.**
+
 ## v0.24.0 - 2026-09-25 - Pass 29: linked cleaning profiles auto-record their tracker - verify.sh PASS 2026-09-25 on run 1 (three page dumps + logcat clean; Cafiza card shows AUTO-RECORD on the tablet; owner checklist open)
 
 Base: v0.23.1. Owner, 2026-09-25 16:18: ran "Cleaning/Forward Flush x5 Powder" (loaded from

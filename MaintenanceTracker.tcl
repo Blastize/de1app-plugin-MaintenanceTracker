@@ -775,6 +775,19 @@ namespace eval ::plugins::MaintenanceTracker {
         return $bev
     }
 
+    # v0.24.1 (Pass 30): 1 when `profiles/<fn>.tcl` exists -- the exact
+    # path select_profile loads (vars.tcl:2940) -- 0 when it does not,
+    # "" when unknown (no core homedir: offline only). Checked BEFORE
+    # select_profile: the core resets part of ::settings before its own
+    # file check, and Graphical_Flow_Calibrator's wrapper (its
+    # plugin.tcl:456) drops the core's "-1", so the return value alone
+    # cannot be trusted on a real tablet.
+    proc _profile_file_exists {fn} {
+        if {$fn eq ""} { return 0 }
+        if {![llength [info commands ::homedir]]} { return "" }
+        return [file isfile [file join [::homedir] profiles "${fn}.tcl"]]
+    }
+
     # v0.24.0: {filename title} when the tracker links a CLEANING
     # profile (so its runs auto-record it), else "".
     proc _item_cleaning_profile {id} {
@@ -2831,6 +2844,13 @@ namespace eval ::plugins::MaintenanceTracker {
             _set_prof_note [translate "No profile is loaded in the app. Pick one in the profile list first."]
             return 0
         }
+        # v0.24.1: a profile with no file (e.g. loaded from a shot) would
+        # make a link that can never load again.
+        if {[_profile_file_exists $fn] eq "0"} {
+            catch { msg -WARN "MaintenanceTracker: not linking '$fn' to '$id': no profiles/$fn.tcl" }
+            _set_prof_note [translate "No saved file for this profile. Pick it in the profile list first."]
+            return 0
+        }
         set title $fn
         catch {
             set t [string trim $::settings(profile_title)]
@@ -3039,6 +3059,13 @@ namespace eval ::plugins::MaintenanceTracker {
         set busy [_machine_busy]
         if {$busy ne ""} {
             _set_prof_note "[translate {Machine busy}] ($busy). [translate {Wait until it is idle.}]"
+            return 0
+        }
+        # v0.24.1: never hand the core a missing file -- see
+        # _profile_file_exists. Nothing is called, saved or sent.
+        if {[_profile_file_exists $fn] eq "0"} {
+            catch { msg -WARN "MaintenanceTracker: linked profile '$fn' for '$id' has no profiles/$fn.tcl; not loading" }
+            _set_prof_note [translate "Profile file missing. Unlink and link it again."]
             return 0
         }
         set r ""
