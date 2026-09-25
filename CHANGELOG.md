@@ -4,6 +4,26 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.25.0 - 2026-09-25 - Pass 31: list + Detail fixes, Link / Unlink on the Edit page - verify.sh PASS 2026-09-25 on run 2 (four page dumps incl. Edit + logcat clean; tablet screenshots checked: sort, Detail, armed Undo, Edit draft Unlink + Cancel)
+
+Base: v0.24.1. Owner: Unlink sat beside Load profile, same size, easy to hit by mistake.
+Tablet captures also showed a cut-off profile name, no Record on Detail, Undo as the page's
+big red main button, and "worst first" sorting by status only (Drip tray 71% under Cafiza 5%).
+
+- List: rank, then value / threshold (highest first), then original order (`_worst_first_ids`).
+- Detail: link shown in full with its one action; green Record (new `mt_btn_primary`) returns
+  to Detail; Undo is a normal button beside Back, red only while armed; header moved up.
+- Edit: Link profile / Link Descale / Link Clean / Unlink beside the name entry, as a draft
+  (`edit_link`) written by Save in its one save_settings; Cancel drops it. Link profile keeps
+  v0.24.1's file check. Link taps hide the keyboard.
+- pass_31_offline.tcl (201 checks) FAILS on v0.24.1, PASSES here; caught an undeclared
+  `edit_link` in open_edit before the tablet.
+- verify.sh run 1 FAILED (Edit: "Linked to:" overlapped "none": `font measure` returns physical px,
+  canvas coords are virtual, 1.91x short). Fixed as one "Linked to: <value>" text item + a GEOM guard.
+
+**Safety status: no new write path. Link keys now change only on Edit > Save (same
+settings.tdb save as every Edit field); Record is the existing confirm flow.**
+
 ## v0.24.1 - 2026-09-25 - Pass 30: Load / Link profile refuse a missing profile file - verify.sh PASS 2026-09-25 on run 1 (three page dumps + logcat clean; owner checklist open)
 
 Base: v0.24.0. Owner, 2026-09-25 16:26: Load profile on "Backflush - Water" (linked

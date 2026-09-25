@@ -1,15 +1,15 @@
 # Maintenance Tracker
 
 **Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
-Version 0.24.1 · a plugin for the Decent DE1app · by Blastize
+Version 0.25.0 · a plugin for the Decent DE1app · by Blastize
 
 ![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
 
 **Everything on one page.** Each tracker shows shots or days since it was last done and a bar that goes amber, then red. Backflush and descale record themselves when the machine runs a real clean or descale cycle.
 
-![Tracker detail: the record history and a link to the app's Descale, with Unlink and Open Descale](docs/detail.png)
+![Tracker detail: the record history, a linked cleaning profile with Load profile, and a green Record button](docs/detail.png)
 
-**Tracker detail.** The history of records, undo for the last one, and a link: a profile (tap Load profile and it is on the machine, ready for the run), or the app's own Descale or Clean action.
+**Tracker detail.** The history of records, a green Record button, undo for the last one, and the tracker's link: a profile (tap Load profile and it is on the machine, ready for the run), or the app's own Descale or Clean action. Links are set on the Edit page.
 
 ![New Tracker: name, count by days, shots or ml, threshold and icon](docs/new_tracker.png)
 
@@ -44,7 +44,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.24.1** (Pass 30)
+Author: **Blastize** · Current version: **0.25.0** (Pass 31)
 
 ## What it will do (target design)
 
@@ -58,8 +58,16 @@ Author: **Blastize** · Current version: **0.24.1** (Pass 30)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.24.1 — Pass 30)
+## What it does right now (v0.25.0 — Pass 31)
 
+- **Tidier Detail page, links on the Edit page** (v0.25.0): Link profile,
+  Link Descale, Link Clean and Unlink moved to the Edit page, beside the
+  name, and only take effect when you tap Save (Cancel undoes a stray
+  Unlink). Detail shows the link in full with its one action, has a green
+  **Record** button that comes back to Detail, and Undo Last Record is a
+  normal button that turns red only after the first tap.
+- **Worst first, properly** (v0.25.0): inside each colour, the tracker
+  closest to due comes first.
 - **Missing profile files are caught** (v0.24.1): Load profile first checks the
   linked profile's file still exists in `profiles/`; if not, it says "Profile
   file missing. Unlink and link it again." and leaves the app's profile alone.
@@ -181,7 +189,8 @@ Author: **Blastize** · Current version: **0.24.1** (Pass 30)
   ships), the state word in color, a right-aligned counter, a segmented
   wear bar with a tick at the amber threshold, and the last-done date.
   The list sorts **worst first** (overdue → due soon → OK → never
-  recorded), so what needs attention is always on page one.
+  recorded; within each, closest to due first), so what needs attention
+  is always on page one.
 - **Icon picker**: when adding (or editing) a tracker you pick its icon
   from **two rows of twelve** — wrench, hot mug, beans, filter,
   droplet, drip-tray grate, O-ring, steam wand, faucet, water tank,
@@ -240,7 +249,7 @@ Author: **Blastize** · Current version: **0.24.1** (Pass 30)
 - **Tapping a card's text area** (anywhere left of its Record button)
   opens a per-item **Detail page**: current state and counter, the 5
   newest events with date and how they were recorded, and — when at
-  least one event exists — an **Undo Last Record** button (red). Undo
+  least one event exists — an **Undo Last Record** button (red once armed). Undo
   asks for confirmation on the same page, showing exactly which record
   will be removed and what the counter falls back to; confirming pops
   just that one event and returns to the card list.

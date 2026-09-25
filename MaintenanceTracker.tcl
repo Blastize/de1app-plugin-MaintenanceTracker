@@ -1397,6 +1397,7 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_edit icon_label text_body
             MaintenanceTracker_edit auto_label text_body
             MaintenanceTracker_edit auto_value text_hi
+            MaintenanceTracker_edit link_value text_body
             MaintenanceTracker_edit edit_note text_mut
             MaintenanceTracker_diagnostics page_title text_hi
             MaintenanceTracker_diagnostics subtitle text_mut
@@ -1454,10 +1455,11 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_confirm {mt_cancel bar_confirm}
             MaintenanceTracker_confirm_burr {minus100 minus10 plus10 plus100 mt_cancel bar_confirm}
             MaintenanceTracker_confirm_bottle {minus1000 minus100 plus100 plus1000 mt_cancel bar_confirm}
-            MaintenanceTracker_detail {btn_edit bar_left mt_hide mt_link mt_linkds mt_linkcl mt_unlink mt_load}
+            MaintenanceTracker_detail {btn_edit bar_left mt_hide mt_load bar_undo}
             MaintenanceTracker_add {btn_auto unit_toggle step0 step1 step2 step3
                                     hid0 hid1 hid2 hid3 hid4 hid5 mt_cancel mt_save}
-            MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 mt_cancel mt_save}
+            MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 mt_cancel mt_save
+                                     mt_elink mt_elinkds mt_elinkcl mt_eunlink}
             MaintenanceTracker_diagnostics {mt_back}
         }
         foreach {p tags} $btn_list {
@@ -1643,6 +1645,14 @@ namespace eval ::plugins::MaintenanceTracker {
                 shape round radius $L(btn_radius) \
                 fill $L(col_red) disabledfill $L(btn_disabled_fill)]
             dui aspect set -theme default -type dbutton_label -style mt_btn_danger [list \
+                fill white disabledfill "#999999"]
+            # v0.25.0: primary style -- the page's ONE go-ahead action
+            # (Detail's Record), state-green in both themes so it reads
+            # at a glance. No pressfill (the flash would stick).
+            dui aspect set -theme default -type dbutton -style mt_btn_primary [list \
+                shape round radius $L(btn_radius) \
+                fill $L(col_ok) disabledfill $L(btn_disabled_fill)]
+            dui aspect set -theme default -type dbutton_label -style mt_btn_primary [list \
                 fill white disabledfill "#999999"]
         }
     }
@@ -2079,6 +2089,39 @@ namespace eval ::plugins::MaintenanceTracker {
         }
     }
 
+    # v0.25.0 (Pass 31): card order. State rank first (red, amber, ok,
+    # unknown, never recorded), then -- within a rank -- how far along
+    # the tracker is (value / threshold, highest first), then the
+    # original order. Until v0.24.1 a rank kept creation order, so a
+    # 71%-due tracker sat under a 5% one. lsort is stable (merge sort),
+    # so sorting by the minor keys first and the rank last nests them.
+    proc _worst_first_ids {summary ids} {
+        set rows {}
+        set idx 0
+        foreach id $ids {
+            set st unset
+            set frac 0.0
+            if {[dict exists $summary items $id]} {
+                set e [dict get $summary items $id]
+                if {[dict exists $e state]} { set st [dict get $e state] }
+                if {[dict exists $e value] && [dict exists $e threshold]} {
+                    set v [dict get $e value]
+                    set t [dict get $e threshold]
+                    if {[string is double -strict $v] && [string is double -strict $t] && $t > 0} {
+                        set frac [expr {double($v) / $t}]
+                    }
+                }
+            }
+            lappend rows [list [_state_rank $st] $frac $idx $id]
+            incr idx
+        }
+        set rows [lsort -real -decreasing -index 1 $rows]
+        set rows [lsort -integer -index 0 $rows]
+        set out {}
+        foreach r $rows { lappend out [lindex $r 3] }
+        return $out
+    }
+
     # Human-readable item names, shared by all pages.
     variable item_labels {
         backflush     "Backflush"
@@ -2262,11 +2305,16 @@ namespace eval ::plugins::MaintenanceTracker {
     # ------------------------------------------------------------------
 
     variable pending_item ""
+    # v0.25.0: where Record's confirm returns (the list, or Detail when
+    # Record was tapped there). Reset by every return and by the list
+    # page's show (stuck-flag rule).
+    variable record_return MaintenanceTracker_settings
     variable burr_offset 0
     variable bottle_size 18900
 
-    proc request_record {id} {
+    proc request_record {id {from MaintenanceTracker_settings}} {
         variable pending_item
+        variable record_return
         variable burr_offset
         variable bottle_size
         variable settings
@@ -2275,6 +2323,8 @@ namespace eval ::plugins::MaintenanceTracker {
             return
         }
         set pending_item $id
+        set record_return MaintenanceTracker_settings
+        if {$from eq "MaintenanceTracker_detail"} { set record_return MaintenanceTracker_detail }
         if {$id eq "burr_install"} {
             set burr_offset 0
             open_page MaintenanceTracker_confirm_burr
@@ -2306,7 +2356,16 @@ namespace eval ::plugins::MaintenanceTracker {
     proc cancel_record {} {
         variable pending_item
         set pending_item ""
-        _return_to_page MaintenanceTracker_settings
+        _return_to_page [_take_record_return]
+    }
+
+    # v0.25.0: the confirm pages' way back, consumed once.
+    proc _take_record_return {} {
+        variable record_return
+        set r $record_return
+        set record_return MaintenanceTracker_settings
+        if {$r ne "MaintenanceTracker_detail"} { set r MaintenanceTracker_settings }
+        return $r
     }
 
     proc adjust_burr_offset {delta} {
@@ -2328,7 +2387,7 @@ namespace eval ::plugins::MaintenanceTracker {
         variable settings
         if {$pending_item eq "" || ![info exists settings(item_$pending_item)]} {
             catch { msg "MaintenanceTracker: nothing pending to record" }
-            _return_to_page MaintenanceTracker_settings
+            _return_to_page [_take_record_return]
             return
         }
         set d $settings(item_$pending_item)
@@ -2366,7 +2425,7 @@ namespace eval ::plugins::MaintenanceTracker {
         catch { msg "MaintenanceTracker: recorded '$pending_item' done now" }
         set pending_item ""
         _invalidate_status_cache
-        _return_to_page MaintenanceTracker_settings
+        _return_to_page [_take_record_return]
     }
 
     # v0.5.0: pop the newest event off an item's log; last_done falls back
@@ -2627,6 +2686,11 @@ namespace eval ::plugins::MaintenanceTracker {
     variable edit_error ""
     # v0.15.0: two-step delete lives on the Edit page (customs only).
     variable edit_delete_armed 0
+    # v0.25.0 (Pass 31): the link, as a DRAFT in _item_link's shape
+    # ("" | descale | clean | {profile fn title}). Link / Unlink only
+    # change the draft; Save writes it with everything else, Cancel
+    # drops it -- an accidental Unlink is one Cancel away from undone.
+    variable edit_link ""
 
     proc open_edit {id} {
         variable edit_item
@@ -2635,6 +2699,7 @@ namespace eval ::plugins::MaintenanceTracker {
         variable edit_unit
         variable edit_icon
         variable edit_auto
+        variable edit_link
         variable edit_error
         variable edit_delete_armed
         variable picker_icons
@@ -2666,9 +2731,85 @@ namespace eval ::plugins::MaintenanceTracker {
             if {$ic ne ""} { set edit_icon $ic }
         }
         set edit_auto [_item_auto_src $id]
+        set edit_link [_item_link $id]
         set edit_error ""
         open_page MaintenanceTracker_edit
         return 1
+    }
+
+    # v0.25.0: Edit-page link controls (draft only, no save here). The
+    # profile capture applies link_profile's checks: a loaded profile,
+    # with a file (v0.24.1).
+    proc edit_link_profile {} {
+        variable edit_link
+        variable edit_error
+        variable edit_delete_armed
+        if {$edit_delete_armed} { return 0 }
+        set fn ""
+        catch { set fn [string trim $::settings(profile_filename)] }
+        if {$fn eq ""} {
+            set edit_error [translate "No profile is loaded in the app. Pick one in the profile list first."]
+            return 0
+        }
+        if {[_profile_file_exists $fn] eq "0"} {
+            set edit_error [translate "No saved file for this profile. Pick it in the profile list first."]
+            return 0
+        }
+        set title $fn
+        catch {
+            set t [string trim $::settings(profile_title)]
+            if {$t ne ""} { set title $t }
+        }
+        set edit_link [list profile [string range $fn 0 127] [string range $title 0 79]]
+        set edit_error ""
+        return 1
+    }
+
+    proc edit_link_kind {kind} {
+        variable edit_link
+        variable edit_error
+        variable edit_delete_armed
+        if {$edit_delete_armed || $kind ni {descale clean}} { return 0 }
+        set edit_link $kind
+        set edit_error ""
+        return 1
+    }
+
+    proc edit_unlink {} {
+        variable edit_link
+        variable edit_error
+        variable edit_delete_armed
+        if {$edit_delete_armed} { return 0 }
+        set edit_link ""
+        set edit_error ""
+        return 1
+    }
+
+    # Human text for a link draft (Edit page value).
+    proc _link_text {link} {
+        switch -- [lindex $link 0] {
+            profile { return [_short_text [lindex $link 2] 40] }
+            descale { return [translate "Descale (app)"] }
+            clean   { return [translate "Clean cycle (app)"] }
+        }
+        return [translate "none"]
+    }
+
+    # Writes a link draft into an item dict (pure; edit_save saves).
+    proc _apply_link {d link} {
+        dict unset d profile_fn
+        dict unset d profile_title
+        dict unset d link_kind
+        switch -- [lindex $link 0] {
+            profile {
+                dict set d profile_fn [lindex $link 1]
+                dict set d profile_title [lindex $link 2]
+            }
+            descale - clean {
+                dict set d link_kind [lindex $link 0]
+            }
+        }
+        return $d
     }
 
     # v0.20.0: cycle the Edit page's auto-record source through the
@@ -2710,6 +2851,7 @@ namespace eval ::plugins::MaintenanceTracker {
         variable edit_threshold
         variable edit_icon
         variable edit_auto
+        variable edit_link
         variable edit_error
         variable edit_delete_armed
         variable picker_icons
@@ -2747,9 +2889,15 @@ namespace eval ::plugins::MaintenanceTracker {
         if {$edit_auto in {{} clean descale}} {
             dict set d auto_src $edit_auto
         }
+        # v0.25.0: the link draft (Link / Unlink moved here from Detail).
+        set old_link [_item_link $id]
+        if {$edit_link ne $old_link} {
+            set d [_apply_link $d $edit_link]
+            _disarm_clean
+        }
         set settings(item_$id) $d
         save_settings
-        catch { msg "MaintenanceTracker: edited '$id' ($label, [dict get $d threshold] [dict get $d unit], [dict get $d icon], auto '[dict get $d auto_src]')" }
+        catch { msg "MaintenanceTracker: edited '$id' ($label, [dict get $d threshold] [dict get $d unit], [dict get $d icon], auto '[dict get $d auto_src]', link '[lindex $edit_link 0] [lindex $edit_link 1]')" }
         set edit_error ""
         # The threshold feeds the state math -- recompute on return.
         _invalidate_status_cache
@@ -3416,23 +3564,8 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
         # composite integer key. Recomputed on every refresh from the
         # same summary the cards render, so taps always match the screen.
         variable displayed_ids
-        set pairs {}
-        set idx 0
-        foreach id [::plugins::MaintenanceTracker::_visible_item_ids] {
-            set st unset
-            catch {
-                if {[dict exists $s items $id]} {
-                    set st [dict get [dict get $s items $id] state]
-                }
-            }
-            lappend pairs [list \
-                [expr {[::plugins::MaintenanceTracker::_state_rank $st] * 1000 + $idx}] $id]
-            incr idx
-        }
-        set displayed_ids {}
-        foreach p [lsort -integer -index 0 $pairs] {
-            lappend displayed_ids [lindex $p 1]
-        }
+        set displayed_ids [::plugins::MaintenanceTracker::_worst_first_ids $s \
+            [::plugins::MaintenanceTracker::_visible_item_ids]]
 
         set n [llength $displayed_ids]
         # v0.7.0: deleting (or v0.8.0 hiding) a tracker can shrink the
@@ -3611,6 +3744,7 @@ namespace eval ::dui::pages::MaintenanceTracker_settings {
         # and the 600 s TTL covers long-idle staleness; re-running the
         # full SDB pass on every arrival made Done/Back taps lag.
         set ::plugins::MaintenanceTracker::pending_item ""
+        set ::plugins::MaintenanceTracker::record_return MaintenanceTracker_settings
         set ::plugins::MaintenanceTracker::detail_mode view
         set ::plugins::MaintenanceTracker::edit_delete_armed 0
         ::plugins::MaintenanceTracker::_capture_return_page $page_to_hide
@@ -3913,7 +4047,8 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             -label_font $L(font_button) -style mt_btn -initial_state hidden
 
         # State header: dot + counter line + last-done line, left-aligned.
-        set head_y [expr {int(round(180 * $L(scale)))}]
+        # v0.25.0: 180 -> 150 ref (the band under the title was dead space).
+        set head_y [expr {int(round(150 * $L(scale)))}]
         set dot_x1 $lx
         set dot_x2 [expr {$dot_x1 + $L(dot_size)}]
         set head_text_x [expr {$dot_x2 + $L(md)}]
@@ -3930,7 +4065,8 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             -anchor w -justify left
 
         # Event history: section label + up to 5 one-line events.
-        set hist_y [expr {int(round(290 * $L(scale)))}]
+        # v0.25.0: 290 -> 240 ref, following the header up.
+        set hist_y [expr {int(round(240 * $L(scale)))}]
         dui add dtext $page $lx $hist_y -tags hist_title \
             -text [translate "History (newest first)"] \
             -font $L(font_primary) -width $L(content_w) -fill $L(text_hi) \
@@ -3950,49 +4086,26 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
         # two lines 599..649) still clears the bar at 716. All three
         # buttons are born hidden; refresh shows the right pair and
         # hides them all while an undo is armed.
-        set prof_y0 [expr {int(round(520 * $L(scale)))}]
+        # v0.25.0 (Pass 31): the row only SHOWS the link and offers its
+        # one action -- Link / Unlink moved to the Edit page (owner:
+        # Unlink sat beside Load profile, same size, easy to hit by
+        # mistake). The value gets the room the Unlink button had, so a
+        # profile title shows in full. Row 520 -> 476 ref with the
+        # history; the last event line ends ~444.
+        set prof_y0 [expr {int(round(476 * $L(scale)))}]
         set prof_y1 [expr {$prof_y0 + $L(btn_h)}]
         set prof_mid [expr {($prof_y0 + $prof_y1) / 2}]
         set load_x0 [expr {$rx - $L(btn_w_wide)}]
-        set unlink_x1 [expr {$load_x0 - $L(md)}]
-        set unlink_x0 [expr {$unlink_x1 - $L(btn_w_std)}]
-        # v0.23.0: unlinked -> three link buttons, right-aligned, all
-        # btn_w_std: [Link profile] md [Link Descale] md [Link Clean].
-        # The page is 1280 ref px wide (right_x 1234), so they start at
-        # 602 -- 112 past value_x (490), where "none" ends near 545.
-        # (240-wide buttons started at 522 and ran over it: caught by
-        # the offline geometry check before the tablet.)
-        set linkcl_x0 [expr {$rx - $L(btn_w_std)}]
-        set linkds_x1 [expr {$linkcl_x0 - $L(md)}]
-        set linkds_x0 [expr {$linkds_x1 - $L(btn_w_std)}]
-        set link_x1 [expr {$linkds_x0 - $L(md)}]
-        set link_x0 [expr {$link_x1 - $L(btn_w_std)}]
         dui add dtext $page $lx $prof_mid -tags prof_label \
             -text [translate "Linked to:"] \
             -font $L(font_body) -width $L(label_col_w) -fill $L(text_body) \
             -anchor w -justify left
         dui add dtext $page $L(value_x) $prof_mid -tags prof_value -text "" \
-            -font $L(font_primary) -width [expr {$unlink_x0 - $L(lg) - $L(value_x)}] \
+            -font $L(font_primary) -width [expr {$load_x0 - $L(lg) - $L(value_x)}] \
             -fill $L(text_hi) -anchor w -justify left
-        dui add dbutton $page $unlink_x0 $prof_y0 $unlink_x1 $prof_y1 \
-            -tags mt_unlink -label [translate "Unlink"] \
-            -command ::dui::pages::MaintenanceTracker_detail::unlink_click \
-            -label_font $L(font_button) -style mt_btn -initial_state hidden
         dui add dbutton $page $load_x0 $prof_y0 $rx $prof_y1 \
             -tags mt_load -label [translate "Load profile"] \
             -command ::dui::pages::MaintenanceTracker_detail::load_click \
-            -label_font $L(font_button) -style mt_btn -initial_state hidden
-        dui add dbutton $page $link_x0 $prof_y0 $link_x1 $prof_y1 \
-            -tags mt_link -label [translate "Link profile"] \
-            -command ::dui::pages::MaintenanceTracker_detail::link_click \
-            -label_font $L(font_button) -style mt_btn -initial_state hidden
-        dui add dbutton $page $linkds_x0 $prof_y0 $linkds_x1 $prof_y1 \
-            -tags mt_linkds -label [translate "Link Descale"] \
-            -command ::dui::pages::MaintenanceTracker_detail::link_descale_click \
-            -label_font $L(font_button) -style mt_btn -initial_state hidden
-        dui add dbutton $page $linkcl_x0 $prof_y0 $rx $prof_y1 \
-            -tags mt_linkcl -label [translate "Link Clean"] \
-            -command ::dui::pages::MaintenanceTracker_detail::link_clean_click \
             -label_font $L(font_button) -style mt_btn -initial_state hidden
 
         # Confirm-mode message (empty in view mode), above the bottom bar.
@@ -4011,19 +4124,32 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
         # Geometry: Back ends at lx+400, Hide spans cx +/- 300, Undo
         # starts at rx-600 (virtual px) -- a full button-width of empty
         # canvas separates the danger button from its neighbors.
+        # v0.25.0 (Pass 31): [Back] [Undo Last Record] ... [Hide Tracker]
+        # [Record]. Record is the page's one go-ahead action (primary,
+        # green, right). Undo lost the red main-action slot: it is a
+        # normal button beside Back and turns red only once armed (its
+        # second tap is the destructive one; Back becomes its Cancel).
+        # Gaps = (content_w - 2 std - 2 xwide) / 3 (62 ref).
+        set bar_gap [expr {($L(content_w) - 2 * $L(btn_w_std) - 2 * $L(btn_w_xwide)) / 3}]
+        set undo_x0 [expr {$lx + $L(btn_w_std) + $bar_gap}]
+        set rec_x0 [expr {$rx - $L(btn_w_std)}]
+        set hide_x1 [expr {$rec_x0 - $bar_gap}]
         dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
             -tags bar_left -label [translate "Back"] \
             -command ::dui::pages::MaintenanceTracker_detail::left_click \
             -label_font $L(font_button) -style mt_btn
-        dui add dbutton $page [expr {$cx - $L(btn_w_xwide) / 2}] $L(bar_y0) \
-            [expr {$cx + $L(btn_w_xwide) / 2}] $L(bar_y1) \
+        dui add dbutton $page $undo_x0 $L(bar_y0) [expr {$undo_x0 + $L(btn_w_xwide)}] $L(bar_y1) \
+            -tags bar_undo -label [translate "Undo Last Record"] \
+            -command ::dui::pages::MaintenanceTracker_detail::right_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page [expr {$hide_x1 - $L(btn_w_xwide)}] $L(bar_y0) $hide_x1 $L(bar_y1) \
             -tags mt_hide -label [translate "Hide Tracker"] \
             -command ::dui::pages::MaintenanceTracker_detail::hide_click \
             -label_font $L(font_button) -style mt_btn -initial_state hidden
-        dui add dbutton $page [expr {$rx - $L(btn_w_xwide)}] $L(bar_y0) $rx $L(bar_y1) \
-            -tags bar_undo -label [translate "Undo Last Record"] \
-            -command ::dui::pages::MaintenanceTracker_detail::right_click \
-            -label_font $L(font_button) -style mt_btn_danger -initial_state hidden
+        dui add dbutton $page $rec_x0 $L(bar_y0) $rx $L(bar_y1) \
+            -tags mt_record -label [translate "Record"] \
+            -command ::dui::pages::MaintenanceTracker_detail::record_click \
+            -label_font $L(font_button) -style mt_btn_primary -initial_state hidden
     }
 
     proc refresh {} {
@@ -4044,9 +4170,8 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             catch { dui item hide $page bar_undo* -initial 1 }
             catch { dui item hide $page mt_hide* -initial 1 }
             catch { dui item hide $page btn_edit* -initial 1 }
-            foreach t {mt_link* mt_linkds* mt_linkcl* mt_unlink* mt_load*} {
-                catch { dui item hide $page $t -initial 1 }
-            }
+            catch { dui item hide $page mt_load* -initial 1 }
+            catch { dui item hide $page mt_record* -initial 1 }
             catch { dui item config $page prof_value -text "" }
             catch { dui item config $page bar_left -label [translate "Back"] }
             catch { dui item hide $page det_plate* -initial 1 }
@@ -4163,18 +4288,22 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             # warning, not just the message text above it.
             catch { dui item config $page bar_undo -label [translate "Yes, Delete Last Record"] }
             catch { dui item show $page bar_undo* -initial 1 }
+            # v0.25.0: red only while armed (the bare-tag face recolor,
+            # the same mechanism as the theme walk).
+            catch { dui item config $page bar_undo-btn -fill $L(col_red) -outline $L(col_red) }
             catch { dui item hide $page mt_hide* -initial 1 }
             catch { dui item hide $page btn_edit* -initial 1 }
+            catch { dui item hide $page mt_record* -initial 1 }
             # v0.22.0: the profile row's controls step aside too.
             # v0.23.0: and a mode switch disarms an armed Clean.
             ::plugins::MaintenanceTracker::_disarm_clean
-            foreach t {mt_link* mt_linkds* mt_linkcl* mt_unlink* mt_load*} {
-                catch { dui item hide $page $t -initial 1 }
-            }
+            catch { dui item hide $page mt_load* -initial 1 }
             catch { dui item config $page prof_value -text "" }
         } else {
             catch { dui item config $page bar_left -label [translate "Back"] }
             catch { dui item config $page bar_undo -label [translate "Undo Last Record"] }
+            catch { dui item config $page bar_undo-btn -fill $L(btn_fill) -outline $L(btn_fill) }
+            catch { dui item show $page mt_record* -initial 1 }
             if {$n > 0} {
                 catch { dui item show $page bar_undo* -initial 1 }
             } else {
@@ -4211,18 +4340,16 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
                 catch { dui item config $page confirm_msg -text "" }
             }
             # v0.22.0 linked profile row; v0.23.0 any of three kinds.
+            # v0.25.0: display + one action only; Link / Unlink live on
+            # the Edit page.
             if {$kind eq ""} {
                 catch { dui item config $page prof_value \
-                    -text [translate "none"] -fill $L(text_mut) }
-                catch { dui item hide $page mt_unlink* -initial 1 }
+                    -text [translate "none -- link one on the Edit page"] -fill $L(text_mut) }
                 catch { dui item hide $page mt_load* -initial 1 }
-                foreach t {mt_link* mt_linkds* mt_linkcl*} {
-                    catch { dui item show $page $t -initial 1 }
-                }
             } else {
                 switch -- $kind {
                     profile {
-                        set vtxt [::plugins::MaintenanceTracker::_short_text [lindex $link 2] 28]
+                        set vtxt [::plugins::MaintenanceTracker::_short_text [lindex $link 2] 40]
                         set atxt [translate "Load profile"]
                     }
                     descale {
@@ -4238,30 +4365,20 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
                 # Relabel through the BARE dbutton tag (the wildcard
                 # form silently fails on-device).
                 catch { dui item config $page mt_load -label $atxt }
-                foreach t {mt_link* mt_linkds* mt_linkcl*} {
-                    catch { dui item hide $page $t -initial 1 }
-                }
-                catch { dui item show $page mt_unlink* -initial 1 }
                 catch { dui item show $page mt_load* -initial 1 }
             }
         }
     }
 
-    # v0.22.0: linked-profile controls, view mode only.
-    proc link_click {} {
+    # v0.25.0: Record from Detail -- the list's confirm flow, returning
+    # here. View mode only (an armed Undo hides the button anyway).
+    proc record_click {} {
         if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
-        ::plugins::MaintenanceTracker::link_profile $::plugins::MaintenanceTracker::detail_item
-        if {[catch { refresh } err]} {
-            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
-        }
+        set id $::plugins::MaintenanceTracker::detail_item
+        if {$id eq ""} { return }
+        ::plugins::MaintenanceTracker::request_record $id MaintenanceTracker_detail
     }
-    proc unlink_click {} {
-        if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
-        ::plugins::MaintenanceTracker::unlink_profile $::plugins::MaintenanceTracker::detail_item
-        if {[catch { refresh } err]} {
-            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
-        }
-    }
+
     # v0.23.0: the action button acts on whatever the tracker links.
     # A page the tap has left (Descale opened, Clean started) is not
     # repainted.
@@ -4283,21 +4400,6 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             catch { msg "MaintenanceTracker: detail refresh failed: $err" }
         }
     }
-    proc link_descale_click {} {
-        if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
-        ::plugins::MaintenanceTracker::link_action $::plugins::MaintenanceTracker::detail_item descale
-        if {[catch { refresh } err]} {
-            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
-        }
-    }
-    proc link_clean_click {} {
-        if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
-        ::plugins::MaintenanceTracker::link_action $::plugins::MaintenanceTracker::detail_item clean
-        if {[catch { refresh } err]} {
-            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
-        }
-    }
-
     # v0.12.0 -> v0.15.0: Edit, any tracker, view mode only.
     proc edit_click {} {
         set id $::plugins::MaintenanceTracker::detail_item
@@ -4686,6 +4788,44 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
             -width 30 -font $L(font_primary) -borderwidth 1 -bg $L(entry_bg) \
             -foreground $L(text_hi) -relief flat
 
+        # v0.25.0 (Pass 31): the link row moved here from Detail, into
+        # the empty band right of the name entry (keyboard-safe top
+        # zone). "Linked to: <value>" on the Name label's line, buttons
+        # on the entry's line, right-aligned with Detail's old v0.23.0
+        # geometry (3 x btn_w_std, md gaps: starts 1204 virtual; the
+        # 30-char entry ends near 910). Unlinked: [Link profile] [Link
+        # Descale] [Link Clean]; linked: [Unlink]. Draft until Save.
+        set lk_y0 $entry_y
+        set lk_y1 [expr {$lk_y0 + $L(btn_h)}]
+        set lkcl_x0 [expr {$rx - $L(btn_w_std)}]
+        set lkds_x1 [expr {$lkcl_x0 - $L(md)}]
+        set lkds_x0 [expr {$lkds_x1 - $L(btn_w_std)}]
+        set lk_x1 [expr {$lkds_x0 - $L(md)}]
+        set lk_x0 [expr {$lk_x1 - $L(btn_w_std)}]
+        # ONE text item, "Linked to: <value>": a label + value pair placed
+        # with `font measure` collided on the tablet (it returns PHYSICAL
+        # px, canvas coords are virtual 2560 -- 1.91x short; v0.25.0
+        # verify run 1).
+        dui add dtext $page $lk_x0 $name_label_y -tags link_value -text "" \
+            -font $L(font_body) -width [expr {$rx - $lk_x0}] -fill $L(text_body) \
+            -anchor nw -justify left
+        dui add dbutton $page $lk_x0 $lk_y0 $lk_x1 $lk_y1 \
+            -tags mt_elink -label [translate "Link profile"] \
+            -command ::dui::pages::MaintenanceTracker_edit::link_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $lkds_x0 $lk_y0 $lkds_x1 $lk_y1 \
+            -tags mt_elinkds -label [translate "Link Descale"] \
+            -command [list ::dui::pages::MaintenanceTracker_edit::link_kind_click descale] \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $lkcl_x0 $lk_y0 $rx $lk_y1 \
+            -tags mt_elinkcl -label [translate "Link Clean"] \
+            -command [list ::dui::pages::MaintenanceTracker_edit::link_kind_click clean] \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $lkcl_x0 $lk_y0 $rx $lk_y1 \
+            -tags mt_eunlink -label [translate "Unlink"] \
+            -command ::dui::pages::MaintenanceTracker_edit::unlink_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+
         # Threshold steppers (burr/Add pattern): label line, then
         # [-][-] value [+][+], deltas relabeled per the tracker's unit.
         set thr_label_y [expr {int(round(265 * $L(scale)))}]
@@ -4813,6 +4953,21 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
             set auto_txt [translate "off (linked profile records)"]
         }
         catch { dui item config $page auto_value -text $auto_txt }
+        # v0.25.0: link draft row.
+        set elink $::plugins::MaintenanceTracker::edit_link
+        catch { dui item config $page link_value \
+            -text "[translate {Linked to:}] [::plugins::MaintenanceTracker::_link_text $elink]" }
+        if {$elink eq ""} {
+            catch { dui item hide $page mt_eunlink* -initial 1 }
+            foreach t {mt_elink* mt_elinkds* mt_elinkcl*} {
+                catch { dui item show $page $t -initial 1 }
+            }
+        } else {
+            foreach t {mt_elink* mt_elinkds* mt_elinkcl*} {
+                catch { dui item hide $page $t -initial 1 }
+            }
+            catch { dui item show $page mt_eunlink* -initial 1 }
+        }
         # v0.15.0: delete lives here now (customs only), two-step. While
         # armed, Save hides, the button carries the explicit "Yes, ..."
         # label and the message line says exactly what the second tap
@@ -4856,6 +5011,27 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
         if {[catch { refresh } err]} {
             catch { msg "MaintenanceTracker: edit refresh failed: $err" }
         }
+    }
+
+    # v0.25.0: link row taps -- draft only. In-page actions hide the
+    # keyboard themselves (CLAUDE.md: only page loads do it for free).
+    proc _after_link_tap {} {
+        catch { dui platform hide_android_keyboard }
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: edit refresh failed: $err" }
+        }
+    }
+    proc link_click {} {
+        ::plugins::MaintenanceTracker::edit_link_profile
+        _after_link_tap
+    }
+    proc link_kind_click {kind} {
+        ::plugins::MaintenanceTracker::edit_link_kind $kind
+        _after_link_tap
+    }
+    proc unlink_click {} {
+        ::plugins::MaintenanceTracker::edit_unlink
+        _after_link_tap
     }
 
     # v0.15.0: two-step delete dispatcher (customs only -- re-checked
