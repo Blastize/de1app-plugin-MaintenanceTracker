@@ -1,7 +1,7 @@
 # Maintenance Tracker
 
 **Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
-Version 0.27.0 · a plugin for the Decent DE1app · by Blastize
+Version 0.28.0 · a plugin for the Decent DE1app · by Blastize
 
 ![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
 
@@ -13,7 +13,9 @@ Version 0.27.0 · a plugin for the Decent DE1app · by Blastize
 
 ![Steps: numbered instructions for a water backflush, with Mark done and a green Start button](docs/steps.png)
 
-**Steps.** Numbered instructions for the job and one green button to do it. For a cleaning profile, Start loads it, tells you to press the espresso button on the group head, and puts your espresso profile back when the run is done. Descale and Clean links open the app's own actions; anything else is marked done.
+**Steps.** Numbered instructions for the job and one green button to do it. Edit steps (top right) lets you reword, add, remove and reorder them. For a cleaning profile, Start loads it, tells you to press the espresso button on the group head, and puts your espresso profile back when the run is done. Descale and Clean links open the app's own actions; anything else is marked done.
+
+![Edit steps: numbered steps with Up, Down and Remove, and Cancel, Reset to default, Add step and a green Save](docs/step_editor.png)
 
 ![New Tracker: name, count by days, shots or ml, threshold and icon](docs/new_tracker.png)
 
@@ -48,7 +50,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.27.0** (Pass 33)
+Author: **Blastize** · Current version: **0.28.0** (Pass 34)
 
 ## What it will do (target design)
 
@@ -62,8 +64,14 @@ Author: **Blastize** · Current version: **0.27.0** (Pass 33)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.27.0 — Pass 33)
+## What it does right now (v0.28.0 — Pass 34)
 
+- **Your own steps** (v0.28.0): **Edit steps** (top right of a tracker's
+  Steps page) lists its steps with **Up**, **Down** and **Remove**; tap a
+  step to rewrite it, **Add step** for a new one (up to eight, one line
+  each). Nothing changes until **Save**; **Cancel** drops the edits and
+  **Reset to default** brings back the built-in steps. The "tap Start"
+  line keeps following the tracker's link until you rewrite it.
 - **Start, then back to your espresso profile** (v0.27.0): on a tracker
   linked to a cleaning profile, the Steps page's green **Start** remembers
   the profile you have loaded, loads the cleaning profile and shows

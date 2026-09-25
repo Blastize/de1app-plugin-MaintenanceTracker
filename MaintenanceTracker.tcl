@@ -1361,7 +1361,7 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_confirm MaintenanceTracker_confirm_burr
             MaintenanceTracker_confirm_bottle MaintenanceTracker_detail
             MaintenanceTracker_add MaintenanceTracker_edit
-            MaintenanceTracker_steps
+            MaintenanceTracker_steps MaintenanceTracker_stepedit
         }
         foreach p $all_pages {
             catch { dui item config $p page_bg -fill $L(page_bg) -outline $L(page_bg) }
@@ -1410,6 +1410,8 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_edit link_value text_body
             MaintenanceTracker_steps page_title text_hi
             MaintenanceTracker_steps steps_sub text_mut
+            MaintenanceTracker_stepedit page_title text_hi
+            MaintenanceTracker_stepedit se_sub text_mut
             MaintenanceTracker_edit edit_note text_mut
             MaintenanceTracker_diagnostics page_title text_hi
             MaintenanceTracker_diagnostics subtitle text_mut
@@ -1468,7 +1470,11 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_confirm_burr {minus100 minus10 plus10 plus100 mt_cancel bar_confirm}
             MaintenanceTracker_confirm_bottle {minus1000 minus100 plus100 plus1000 mt_cancel bar_confirm}
             MaintenanceTracker_detail {btn_edit bar_left mt_hide bar_undo mt_record}
-            MaintenanceTracker_steps {mt_sback mt_sdone}
+            MaintenanceTracker_steps {mt_sback mt_sdone mt_sedit}
+            MaintenanceTracker_stepedit {mt_secancel mt_sereset mt_seadd mt_sefcancel
+                                         mt_seup0 mt_seup1 mt_seup2 mt_seup3 mt_seup4 mt_seup5 mt_seup6 mt_seup7
+                                         mt_sedn0 mt_sedn1 mt_sedn2 mt_sedn3 mt_sedn4 mt_sedn5 mt_sedn6 mt_sedn7
+                                         mt_serm0 mt_serm1 mt_serm2 mt_serm3 mt_serm4 mt_serm5 mt_serm6 mt_serm7}
             MaintenanceTracker_add {btn_auto unit_toggle step0 step1 step2 step3
                                     hid0 hid1 hid2 hid3 hid4 hid5 mt_cancel mt_save}
             MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 mt_cancel mt_save
@@ -1721,6 +1727,7 @@ namespace eval ::plugins::MaintenanceTracker {
         dui page add MaintenanceTracker_add -namespace true -theme default -type fpdialog
         dui page add MaintenanceTracker_edit -namespace true -theme default -type fpdialog
         dui page add MaintenanceTracker_steps -namespace true -theme default -type fpdialog
+        dui page add MaintenanceTracker_stepedit -namespace true -theme default -type fpdialog
         return MaintenanceTracker_settings
     }
 
@@ -3655,24 +3662,10 @@ namespace eval ::plugins::MaintenanceTracker {
     # (trimmed, empties dropped, capped), else the template; "{start}"
     # resolved for the tracker's current link.
     proc _item_steps {id} {
-        variable settings
-        variable step_templates
-        variable steps_max
-        set own {}
-        if {[info exists settings(item_$id)] && [dict exists $settings(item_$id) steps]} {
-            foreach st [dict get $settings(item_$id) steps] {
-                set st [string trim $st]
-                if {$st ne ""} { lappend own [string range $st 0 119] }
-            }
-        }
-        if {[llength $own] > 0} {
-            set raw $own
-        } else {
-            set raw [dict get $step_templates [_steps_template_id $id]]
-        }
+        set raw [_item_steps_raw $id]
         set kind [lindex [_item_link $id] 0]
         set out {}
-        foreach st [lrange $raw 0 [expr {$steps_max - 1}]] {
+        foreach st $raw {
             if {$st eq "{start}"} { set st [_start_step $kind] }
             lappend out [translate $st]
         }
@@ -3697,6 +3690,218 @@ namespace eval ::plugins::MaintenanceTracker {
         set steps_item $id
         _disarm_clean
         open_page MaintenanceTracker_steps
+        return 1
+    }
+
+    # ------------------------------------------------------------------
+    #  Step editor (Pass 34, v0.28.0) -- DrinkMenu's Method editor
+    #  pattern: every change edits a DRAFT (se_draft); only Save writes,
+    #  once, into the tracker's own `steps` list (settings.tdb via
+    #  save_settings). Cancel drops the draft. A draft equal to the
+    #  built-in template is stored as NO list (the key is removed), so
+    #  the tracker keeps following the template. "{start}" (the
+    #  link-aware start line) stays a token until its row is edited.
+    # ------------------------------------------------------------------
+
+    variable se_item ""
+    variable se_draft {}
+    variable se_mode list
+    variable se_form_idx -1
+    variable se_text ""
+    variable se_error ""
+    variable step_max_chars 120
+
+    # The template's raw steps ({start} kept as a token).
+    proc _steps_template_raw {id} {
+        variable step_templates
+        variable steps_max
+        return [lrange [dict get $step_templates [_steps_template_id $id]] 0 [expr {$steps_max - 1}]]
+    }
+
+    # The tracker's raw steps: its own list, else the template.
+    proc _item_steps_raw {id} {
+        variable settings
+        variable steps_max
+        variable step_max_chars
+        set own {}
+        if {[info exists settings(item_$id)] && [dict exists $settings(item_$id) steps]} {
+            foreach st [dict get $settings(item_$id) steps] {
+                set st [string trim $st]
+                if {$st ne ""} { lappend own [string range $st 0 [expr {$step_max_chars - 1}]] }
+            }
+        }
+        if {[llength $own] > 0} { return [lrange $own 0 [expr {$steps_max - 1}]] }
+        return [_steps_template_raw $id]
+    }
+
+    # One draft row as shown ({start} resolved for the tracker's link).
+    proc _se_display {st} {
+        variable se_item
+        if {$st eq "{start}"} { return [_start_step [lindex [_item_link $se_item] 0]] }
+        return $st
+    }
+
+    # Typed text, cleaned: whitespace runs (incl. Android newlines) -> one
+    # space, trimmed, capped.
+    proc _se_clean {txt} {
+        variable step_max_chars
+        set t [string trim [regsub -all {\s+} $txt " "]]
+        return [string range $t 0 [expr {$step_max_chars - 1}]]
+    }
+
+    proc open_step_editor {id} {
+        variable settings
+        variable se_item
+        variable se_draft
+        variable se_mode
+        variable se_form_idx
+        variable se_text
+        variable se_error
+        if {![info exists settings(item_$id)]} { return 0 }
+        set se_item $id
+        set se_draft [_item_steps_raw $id]
+        set se_mode list
+        set se_form_idx -1
+        set se_text ""
+        set se_error ""
+        open_page MaintenanceTracker_stepedit
+        return 1
+    }
+
+    proc se_move {i delta} {
+        variable se_draft
+        variable se_mode
+        if {$se_mode ne "list"} { return 0 }
+        set j [expr {$i + $delta}]
+        if {$i < 0 || $j < 0 || $i >= [llength $se_draft] || $j >= [llength $se_draft]} { return 0 }
+        set a [lindex $se_draft $i]
+        lset se_draft $i [lindex $se_draft $j]
+        lset se_draft $j $a
+        return 1
+    }
+
+    proc se_remove {i} {
+        variable se_draft
+        variable se_mode
+        variable se_error
+        if {$se_mode ne "list" || $i < 0 || $i >= [llength $se_draft]} { return 0 }
+        set se_draft [lreplace $se_draft $i $i]
+        set se_error ""
+        return 1
+    }
+
+    # Open the form for row i (-1 = a new step at the end).
+    proc se_edit {i} {
+        variable se_draft
+        variable se_mode
+        variable se_form_idx
+        variable se_text
+        variable se_error
+        variable steps_max
+        if {$se_mode ne "list"} { return 0 }
+        if {$i < 0} {
+            if {[llength $se_draft] >= $steps_max} {
+                set se_error [translate "Eight steps is the most a tracker can hold."]
+                return 0
+            }
+            set se_form_idx -1
+            set se_text ""
+        } else {
+            if {$i >= [llength $se_draft]} { return 0 }
+            set se_form_idx $i
+            set se_text [_se_display [lindex $se_draft $i]]
+        }
+        set se_error ""
+        set se_mode form
+        return 1
+    }
+
+    proc se_form_save {} {
+        variable se_draft
+        variable se_mode
+        variable se_form_idx
+        variable se_text
+        variable se_error
+        if {$se_mode ne "form"} { return 0 }
+        set t [_se_clean $se_text]
+        if {$t eq ""} {
+            set se_error [translate "Type the step first, or tap Cancel."]
+            return 0
+        }
+        if {$se_form_idx < 0} {
+            lappend se_draft $t
+        } else {
+            set old [lindex $se_draft $se_form_idx]
+            # An untouched start line stays the link-aware token.
+            if {!($old eq "{start}" && $t eq [_se_clean [_se_display $old]])} {
+                lset se_draft $se_form_idx $t
+            }
+        }
+        set se_mode list
+        set se_form_idx -1
+        set se_text ""
+        set se_error ""
+        return 1
+    }
+
+    proc se_form_cancel {} {
+        variable se_mode
+        variable se_form_idx
+        variable se_text
+        variable se_error
+        set se_mode list
+        set se_form_idx -1
+        set se_text ""
+        set se_error ""
+        return 1
+    }
+
+    proc se_reset {} {
+        variable se_item
+        variable se_draft
+        variable se_mode
+        variable se_error
+        if {$se_mode ne "list"} { return 0 }
+        set se_draft [_steps_template_raw $se_item]
+        set se_error ""
+        return 1
+    }
+
+    # The ONE write of this editor: the draft into the tracker's `steps`
+    # (or the key removed when the draft is the template). One save.
+    proc se_save {} {
+        variable settings
+        variable se_item
+        variable se_draft
+        variable se_mode
+        variable se_error
+        variable steps_max
+        if {$se_mode ne "list"} { return 0 }
+        set id $se_item
+        if {![info exists settings(item_$id)]} { return 0 }
+        set clean {}
+        foreach st $se_draft {
+            if {$st eq "{start}"} { lappend clean $st ; continue }
+            set t [_se_clean $st]
+            if {$t ne ""} { lappend clean $t }
+        }
+        set clean [lrange $clean 0 [expr {$steps_max - 1}]]
+        if {[llength $clean] == 0} {
+            set se_error [translate "Keep at least one step, or tap Reset to default."]
+            return 0
+        }
+        set d $settings(item_$id)
+        if {$clean eq [_steps_template_raw $id]} {
+            dict unset d steps
+            set how "template"
+        } else {
+            dict set d steps $clean
+            set how "[llength $clean] own steps"
+        }
+        set settings(item_$id) $d
+        save_settings
+        catch { msg "MaintenanceTracker: steps saved for '$id' ($how)" }
+        set se_error ""
         return 1
     }
 
@@ -5524,9 +5729,16 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         set rx $L(right_x)
         set cx [expr {($lx + $rx) / 2}]
 
+        # Title width stops short of the header's right corner (Detail's
+        # rule) -- v0.28.0's Edit steps button sits there.
         dui add dtext $page $cx $L(header_solo_title_y) -tags page_title -text "" \
-            -font $L(font_title) -width $L(content_w) -fill $L(text_hi) \
-            -anchor center -justify center
+            -font $L(font_title) -width [expr {$L(content_w) - 2 * ($L(btn_w_std) + $L(lg))}] \
+            -fill $L(text_hi) -anchor center -justify center
+        dui add dbutton $page [expr {$rx - $L(btn_w_std)}] [expr {int(round(22 * $L(scale)))}] \
+            $rx [expr {int(round(22 * $L(scale))) + $L(btn_h)}] \
+            -tags mt_sedit -label [translate "Edit steps"] \
+            -command ::dui::pages::MaintenanceTracker_steps::edit_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
         set sub_y [expr {int(round(96 * $L(scale)))}]
         dui add dtext $page $cx $sub_y -tags steps_sub -text "" \
             -font $L(font_caption) -width $L(content_w) -fill $L(text_mut) \
@@ -5597,8 +5809,10 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
             catch { dui item config $page steps_msg -text "" }
             catch { dui item hide $page mt_sdone* -initial 1 }
             catch { dui item hide $page mt_sgo* -initial 1 }
+            catch { dui item hide $page mt_sedit* -initial 1 }
             return
         }
+        catch { dui item show $page mt_sedit* -initial 1 }
         catch { dui item config $page page_title \
             -text [::plugins::MaintenanceTracker::_item_label $id] }
         set link [::plugins::MaintenanceTracker::_item_link $id]
@@ -5670,6 +5884,14 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         ::plugins::MaintenanceTracker::_return_to_page MaintenanceTracker_detail
     }
 
+    # v0.28.0: the step editor for this tracker.
+    proc edit_click {} {
+        set id $::plugins::MaintenanceTracker::steps_item
+        if {$id eq ""} { return }
+        ::plugins::MaintenanceTracker::_disarm_clean
+        ::plugins::MaintenanceTracker::open_step_editor $id
+    }
+
     proc done_click {} {
         set id $::plugins::MaintenanceTracker::steps_item
         if {$id eq ""} { return }
@@ -5715,6 +5937,242 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         if {[catch { refresh } err]} {
             catch { msg "MaintenanceTracker: steps refresh failed: $err" }
         }
+    }
+}
+
+# ===========================================================================
+#  Step editor page -- Pass 34 (v0.28.0). List mode: up to 8 numbered
+#  rows, each with Up / Down / Remove; tap a row's text to edit it. Bar:
+#  Cancel, Reset to default, Add step, Save (green). Form mode: one entry
+#  in the keyboard-safe top zone with Cancel / Save step right under it;
+#  the rows and the bar step aside. Everything edits the draft; only Save
+#  writes (::plugins::MaintenanceTracker::se_save).
+# ===========================================================================
+
+namespace eval ::dui::pages::MaintenanceTracker_stepedit {
+
+    proc setup {} {
+        set page [namespace tail [namespace current]]
+        upvar #0 ::plugins::MaintenanceTracker::L L
+        ::plugins::MaintenanceTracker::_page_bg $page
+        set lx $L(left_x)
+        set rx $L(right_x)
+        set cx [expr {($lx + $rx) / 2}]
+        set n_max $::plugins::MaintenanceTracker::steps_max
+
+        dui add dtext $page $cx $L(header_solo_title_y) -tags page_title \
+            -text [translate "Edit steps"] \
+            -font $L(font_title) -width $L(content_w) -fill $L(text_hi) \
+            -anchor center -justify center
+        set sub_y [expr {int(round(96 * $L(scale)))}]
+        dui add dtext $page $cx $sub_y -tags se_sub -text "" \
+            -font $L(font_caption) -width $L(content_w) -fill $L(text_mut) \
+            -anchor center -justify center
+
+        # List rows: 66 ref apart from 128, buttons 56 tall (the card
+        # action size); row 8 ends at 646, the bar starts at 716. Right
+        # to left: Remove (130), Down (100), Up (100), md apart; the
+        # text stops xl short of Up.
+        set pitch [expr {int(round(66 * $L(scale)))}]
+        set y0 [expr {int(round(128 * $L(scale)))}]
+        set bh [expr {int(round(56 * $L(scale)))}]
+        set num_w [expr {int(round(44 * $L(scale)))}]
+        set rm_w [expr {int(round(130 * $L(scale)))}]
+        set ud_w [expr {int(round(100 * $L(scale)))}]
+        set rm_x0 [expr {$rx - $rm_w}]
+        set dn_x1 [expr {$rm_x0 - $L(md)}] ; set dn_x0 [expr {$dn_x1 - $ud_w}]
+        set up_x1 [expr {$dn_x0 - $L(md)}] ; set up_x0 [expr {$up_x1 - $ud_w}]
+        set txt_x [expr {$lx + $num_w}]
+        set txt_w [expr {$up_x0 - $L(xl) - $txt_x}]
+        for {set i 0} {$i < $n_max} {incr i} {
+            set y [expr {$y0 + $i * $pitch}]
+            set ym [expr {$y + $bh / 2}]
+            dui add dtext $page $lx $ym -tags se_n$i -text "" \
+                -font $L(font_primary) -fill $L(col_ok) -anchor w -justify left
+            dui add dtext $page $txt_x $ym -tags se_t$i -text "" \
+                -font $L(font_body) -width $txt_w -fill $L(text_hi) -anchor w -justify left
+            # Invisible tap zone over number + text (the card-open rect
+            # pattern: no style, so no pressfill that could stick).
+            dui add dbutton $page $lx $y [expr {$up_x0 - $L(xl)}] [expr {$y + $bh}] \
+                -tags mt_serow$i \
+                -command [list ::dui::pages::MaintenanceTracker_stepedit::row_click $i] \
+                -initial_state hidden
+            dui add dbutton $page $up_x0 $y $up_x1 [expr {$y + $bh}] \
+                -tags mt_seup$i -label [translate "Up"] \
+                -command [list ::dui::pages::MaintenanceTracker_stepedit::move_click $i -1] \
+                -label_font $L(font_button) -style mt_btn -initial_state hidden
+            dui add dbutton $page $dn_x0 $y $dn_x1 [expr {$y + $bh}] \
+                -tags mt_sedn$i -label [translate "Down"] \
+                -command [list ::dui::pages::MaintenanceTracker_stepedit::move_click $i 1] \
+                -label_font $L(font_button) -style mt_btn -initial_state hidden
+            dui add dbutton $page $rm_x0 $y $rx [expr {$y + $bh}] \
+                -tags mt_serm$i -label [translate "Remove"] \
+                -command [list ::dui::pages::MaintenanceTracker_stepedit::remove_click $i] \
+                -label_font $L(font_button) -style mt_btn -initial_state hidden
+        }
+
+        # Form mode (top zone, y < 400 ref): caption, entry, hint, then
+        # Cancel / Save step. Born hidden.
+        set fcap_y [expr {int(round(132 * $L(scale)))}]
+        set fent_y [expr {int(round(164 * $L(scale)))}]
+        set fhint_y [expr {int(round(214 * $L(scale)))}]
+        set fbtn_y [expr {int(round(250 * $L(scale)))}]
+        dui add dtext $page $lx $fcap_y -tags se_fcap -text "" \
+            -font $L(font_primary) -fill $L(text_hi) -anchor nw -justify left \
+            -initial_state hidden
+        dui add entry $page $lx $fent_y -tags se_entry \
+            -textvariable ::plugins::MaintenanceTracker::se_text \
+            -width 90 -font $L(font_body) -borderwidth 1 -bg $L(entry_bg) \
+            -foreground $L(text_hi) -relief flat -initial_state hidden
+        dui add dtext $page $lx $fhint_y -tags se_fhint \
+            -text [translate "One line, up to 120 characters."] \
+            -font $L(font_caption) -fill $L(text_mut) -anchor nw -justify left \
+            -initial_state hidden
+        dui add dbutton $page $lx $fbtn_y [expr {$lx + $L(btn_w_std)}] [expr {$fbtn_y + $L(btn_h)}] \
+            -tags mt_sefcancel -label [translate "Cancel"] \
+            -command ::dui::pages::MaintenanceTracker_stepedit::form_cancel_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page [expr {$rx - $L(btn_w_wide)}] $fbtn_y $rx [expr {$fbtn_y + $L(btn_h)}] \
+            -tags mt_sefsave -label [translate "Save step"] \
+            -command ::dui::pages::MaintenanceTracker_stepedit::form_save_click \
+            -label_font $L(font_button) -style mt_btn_primary -initial_state hidden
+
+        # Bottom bar (list mode): [Cancel] [Reset to default] [Add step]
+        # [Save] -- Detail's four-slot geometry; Save is the primary.
+        set bar_gap [expr {($L(content_w) - 2 * $L(btn_w_std) - 2 * $L(btn_w_xwide)) / 3}]
+        set rs_x0 [expr {$lx + $L(btn_w_std) + $bar_gap}]
+        set sv_x0 [expr {$rx - $L(btn_w_std)}]
+        set ad_x1 [expr {$sv_x0 - $bar_gap}]
+        dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
+            -tags mt_secancel -label [translate "Cancel"] \
+            -command ::dui::pages::MaintenanceTracker_stepedit::cancel_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $rs_x0 $L(bar_y0) [expr {$rs_x0 + $L(btn_w_xwide)}] $L(bar_y1) \
+            -tags mt_sereset -label [translate "Reset to default"] \
+            -command ::dui::pages::MaintenanceTracker_stepedit::reset_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page [expr {$ad_x1 - $L(btn_w_xwide)}] $L(bar_y0) $ad_x1 $L(bar_y1) \
+            -tags mt_seadd -label [translate "Add step"] \
+            -command ::dui::pages::MaintenanceTracker_stepedit::add_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $sv_x0 $L(bar_y0) $rx $L(bar_y1) \
+            -tags mt_sesave -label [translate "Save"] \
+            -command ::dui::pages::MaintenanceTracker_stepedit::save_click \
+            -label_font $L(font_button) -style mt_btn_primary -initial_state hidden
+    }
+
+    proc _set_list_vis {page on} {
+        set n_max $::plugins::MaintenanceTracker::steps_max
+        set n [llength $::plugins::MaintenanceTracker::se_draft]
+        for {set i 0} {$i < $n_max} {incr i} {
+            set row [expr {$on && $i < $n}]
+            foreach t [list mt_serow$i mt_seup$i mt_sedn$i mt_serm$i] {
+                set show $row
+                if {$t eq "mt_seup$i" && $i == 0} { set show 0 }
+                if {$t eq "mt_sedn$i" && $i == $n - 1} { set show 0 }
+                catch { dui item [expr {$show ? "show" : "hide"}] $page $t* -initial 1 }
+            }
+            if {!$row} {
+                catch { dui item config $page se_n$i -text "" }
+                catch { dui item config $page se_t$i -text "" }
+            }
+        }
+        foreach t {mt_secancel mt_sereset mt_seadd mt_sesave} {
+            catch { dui item [expr {$on ? "show" : "hide"}] $page $t* -initial 1 }
+        }
+    }
+
+    proc _set_form_vis {page on} {
+        foreach t {se_fcap se_entry se_fhint} {
+            catch { dui item [expr {$on ? "show" : "hide"}] $page $t -initial 1 }
+        }
+        foreach t {mt_sefcancel mt_sefsave} {
+            catch { dui item [expr {$on ? "show" : "hide"}] $page $t* -initial 1 }
+        }
+    }
+
+    proc refresh {} {
+        set page [namespace tail [namespace current]]
+        upvar #0 ::plugins::MaintenanceTracker::L L
+        set id $::plugins::MaintenanceTracker::se_item
+        set err $::plugins::MaintenanceTracker::se_error
+        if {$id eq "" || ![info exists ::plugins::MaintenanceTracker::settings(item_$id)]} {
+            catch { dui item config $page se_sub -text [translate "Nothing selected"] -fill $L(text_mut) }
+            set ::plugins::MaintenanceTracker::se_draft {}
+            _set_form_vis $page 0
+            _set_list_vis $page 0
+            return
+        }
+        if {$err ne ""} {
+            catch { dui item config $page se_sub -text $err -fill $L(col_red) }
+        } else {
+            catch { dui item config $page se_sub \
+                -text [::plugins::MaintenanceTracker::_item_label $id] -fill $L(text_mut) }
+        }
+        if {$::plugins::MaintenanceTracker::se_mode eq "form"} {
+            _set_list_vis $page 0
+            set fi $::plugins::MaintenanceTracker::se_form_idx
+            set cap [expr {$fi < 0 ? [translate "New step"] : "[translate {Edit step}] [expr {$fi + 1}]"}]
+            catch { dui item config $page se_fcap -text $cap }
+            _set_form_vis $page 1
+            return
+        }
+        _set_form_vis $page 0
+        set draft $::plugins::MaintenanceTracker::se_draft
+        for {set i 0} {$i < [llength $draft]} {incr i} {
+            catch { dui item config $page se_n$i -text "[expr {$i + 1}]." }
+            catch { dui item config $page se_t$i \
+                -text [::plugins::MaintenanceTracker::_short_text \
+                    [::plugins::MaintenanceTracker::_se_display [lindex $draft $i]] 90] }
+        }
+        _set_list_vis $page 1
+        if {[llength $draft] >= $::plugins::MaintenanceTracker::steps_max} {
+            catch { dui item hide $page mt_seadd* -initial 1 }
+        }
+    }
+
+    proc _after {} {
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: step editor refresh failed: $err" }
+        }
+    }
+    proc _hide_kb {} { catch { dui platform hide_android_keyboard } }
+
+    proc row_click {i}          { ::plugins::MaintenanceTracker::se_edit $i ; _after }
+    proc move_click {i delta}   { ::plugins::MaintenanceTracker::se_move $i $delta ; _after }
+    proc remove_click {i}       { ::plugins::MaintenanceTracker::se_remove $i ; _after }
+    proc add_click {}           { ::plugins::MaintenanceTracker::se_edit -1 ; _after }
+    proc reset_click {}         { ::plugins::MaintenanceTracker::se_reset ; _after }
+    proc form_save_click {} {
+        _hide_kb
+        ::plugins::MaintenanceTracker::se_form_save
+        _after
+    }
+    proc form_cancel_click {} {
+        _hide_kb
+        ::plugins::MaintenanceTracker::se_form_cancel
+        _after
+    }
+    proc cancel_click {} {
+        _hide_kb
+        set ::plugins::MaintenanceTracker::se_error ""
+        ::plugins::MaintenanceTracker::_return_to_page MaintenanceTracker_steps
+    }
+    proc save_click {} {
+        _hide_kb
+        if {[::plugins::MaintenanceTracker::se_save]} {
+            ::plugins::MaintenanceTracker::_return_to_page MaintenanceTracker_steps
+            return
+        }
+        _after
+    }
+
+    proc show {page_to_hide page_to_show} {
+        # Stuck-flag rule: a (re)shown editor starts in list mode; the
+        # draft itself survives (a flow interruption must not wipe it).
+        ::plugins::MaintenanceTracker::se_form_cancel
+        if {![::plugins::MaintenanceTracker::_page_is_current MaintenanceTracker_stepedit]} { return }
+        _after
     }
 }
 

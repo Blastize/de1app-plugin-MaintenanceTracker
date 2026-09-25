@@ -4,6 +4,28 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.28.0 - 2026-09-25 - Pass 34: step editor - verify.sh PASS 2026-09-25 on run 1 (six page dumps incl. the editor + logcat clean); live: move + Cancel (nothing saved), edit with the keyboard up + Save ("3 own steps"), Reset to default + Save ("template", key removed)
+
+Base: v0.27.0. Owner: edit the instructions, add steps, "kind of like Drink Menu".
+
+- Steps page: **Edit steps** (header, top right) opens `MaintenanceTracker_stepedit`.
+- List mode: up to 8 numbered rows with Up / Down / Remove, tap a row to edit it; bar Cancel /
+  Reset to default / Add step / Save (green). Form mode: one entry + Cancel / Save step in the
+  keyboard-safe top zone; rows and bar step aside. Form buttons, Save and Cancel hide the keyboard.
+- Every control edits a draft (`se_draft`). Text is cleaned (whitespace runs -> one space,
+  trimmed, max 120 chars, max 8 steps). An untouched start line keeps the `{start}` token.
+
+Write path (NEW, the only one this pass adds): `se_save` -> the tracker's item dict in MT's own
+settings.tdb, `dict set d steps <list>`, or `dict unset d steps` when the draft equals the
+built-in template (the tracker then follows the template again), then ONE `save_settings`,
+logged "steps saved for '<id>' (...)". Refused with 0 steps or while the form is open.
+Nothing else is written; Cancel / Back write nothing.
+
+- pass_34_offline.tcl (345 checks) FAILS on v0.27.0, PASSES here.
+
+**Safety status: one new write -- the tracker's `steps` list in MT's own settings.tdb, only on
+the editor's Save. No machine, profile, history or database writes.**
+
 ## v0.27.0 - 2026-09-25 - Pass 33: Start loads the cleaning profile and switches back - verify.sh PASS 2026-09-25 on run 1 (five page dumps + logcat clean); live on the tablet: Start armed (x5 loaded, 'Gentle and sweet' remembered), Switch back now restored it, run_restore cleared; a real group-head run is the owner's to close
 
 Base: v0.26.0. Owner: MT should switch to the linked profile, run it, then switch back to the
