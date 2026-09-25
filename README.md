@@ -1,7 +1,7 @@
 # Maintenance Tracker
 
 **Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
-Version 0.26.0 · a plugin for the Decent DE1app · by Blastize
+Version 0.27.0 · a plugin for the Decent DE1app · by Blastize
 
 ![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
 
@@ -11,9 +11,9 @@ Version 0.26.0 · a plugin for the Decent DE1app · by Blastize
 
 **Tracker detail.** The history of records, Record and undo for the last one, and the tracker's link: a profile, or the app's own Descale or Clean action (links are set on the Edit page). The green Start button opens the steps.
 
-![Steps: numbered instructions for a water backflush, with Mark done and a green Load profile button](docs/steps.png)
+![Steps: numbered instructions for a water backflush, with Mark done and a green Start button](docs/steps.png)
 
-**Steps.** Numbered instructions for the job and one green button to do it: load the linked profile, open the app's Descale, start its Clean cycle, or mark the task done.
+**Steps.** Numbered instructions for the job and one green button to do it. For a cleaning profile, Start loads it, tells you to press the espresso button on the group head, and puts your espresso profile back when the run is done. Descale and Clean links open the app's own actions; anything else is marked done.
 
 ![New Tracker: name, count by days, shots or ml, threshold and icon](docs/new_tracker.png)
 
@@ -48,7 +48,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.26.0** (Pass 32)
+Author: **Blastize** · Current version: **0.27.0** (Pass 33)
 
 ## What it will do (target design)
 
@@ -62,8 +62,18 @@ Author: **Blastize** · Current version: **0.26.0** (Pass 32)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.26.0 — Pass 32)
+## What it does right now (v0.27.0 — Pass 33)
 
+- **Start, then back to your espresso profile** (v0.27.0): on a tracker
+  linked to a cleaning profile, the Steps page's green **Start** remembers
+  the profile you have loaded, loads the cleaning profile and shows
+  "press the espresso button on the group head" (on a machine with a
+  group head controller only the group head can start espresso). Your
+  profile comes back by itself a few seconds after the run, when you tap
+  **Switch back now**, 10 minutes after Start if the run never began, or
+  at the next app start. It never switches while the machine is busy, and
+  if you picked another profile in the meantime, that one stays. Start
+  refuses when your current profile has unsaved changes.
 - **Step-by-step instructions** (v0.26.0): every tracker's Detail page has a
   green **Start** button that opens its Steps page: numbered instructions
   and one green button for the job: **Load profile**, **Open Descale** or

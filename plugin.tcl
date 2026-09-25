@@ -1,6 +1,12 @@
 #
 # Maintenance Tracker -- DE1app plugin manifest
 #
+# Pass 33 (v0.27.0): Start on a profile-linked tracker remembers the
+# loaded espresso profile, loads the cleaning profile and asks for the
+# group head's espresso button; the espresso profile comes back after the
+# run, on Switch back now, after 10 min unused, or at the next app start.
+# New automatic write: the switch-back's select_profile + save + send.
+#
 # Pass 32 (v0.26.0): every tracker gets a Steps page -- numbered
 # instructions (built-in templates picked by keywords in its name,
 # "{start}" resolved for its link) and one green action: Load profile,
@@ -232,7 +238,7 @@ namespace eval ::plugins::MaintenanceTracker {
     variable contact     "n/a"
     # Bare number, no "v" prefix (ShotHistoryEditor v0.6.4 lesson: the
     # startup log message prepends one).
-    variable version     "0.26.0"
+    variable version     "0.27.0"
     variable name        "Maintenance Tracker"
     variable description "Tracks machine maintenance (backflush, descale, gasket, burrs, water filter, water bottle level, plus your own custom trackers) from user-recorded events and the machine's own dispense reports. Read-only by design; writes only its own settings file."
 
@@ -305,7 +311,10 @@ proc ::plugins::MaintenanceTracker::main {} {
             set hooked 1
         }
     }
-    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 32: Steps page with instructions and one green action; links to a profile or the app's Descale / Clean, SDB read-only)" }
+    # v0.27.0: a switch-back left pending by an app restart comes back
+    # once the profile and the connection have settled.
+    after 20000 ::plugins::MaintenanceTracker::_resume_pending_run
+    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 33: Start loads the cleaning profile and switches back after the run; links to a profile or the app's Descale / Clean, SDB read-only)" }
     return
 }
 

@@ -4,6 +4,34 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.27.0 - 2026-09-25 - Pass 33: Start loads the cleaning profile and switches back - verify.sh PASS 2026-09-25 on run 1 (five page dumps + logcat clean); live on the tablet: Start armed (x5 loaded, 'Gentle and sweet' remembered), Switch back now restored it, run_restore cleared; a real group-head run is the owner's to close
+
+Base: v0.26.0. Owner: MT should switch to the linked profile, run it, then switch back to the
+espresso profile -- fewer decisions, no accidental espresso on the cleaning profile. The
+tablet cannot start espresso on a GHC machine (core machine.tcl:936, vars.tcl:3476), so
+the page asks for the group head's espresso button (cup glyph + hint).
+
+- Start (profile link, Steps page): refuses when busy, when the cleaning file is missing,
+  when the current profile has unsaved edits (`profile_has_changed`), is the cleaning profile
+  with nothing pending, or has no file. Otherwise it saves `settings(run_restore)` =
+  {prev_fn prev_title clean_fn clean_title item ts} FIRST, then switches (below). A Start
+  over a pending one keeps the pending espresso profile as the way back.
+- Switch-back triggers: 5 s after the run's after_flow_complete (the core saves the shot file
+  and MT auto-records in that event, so the cleaning profile must still be loaded then); 20 s
+  after Espresso ends if the run never reached the pour; Switch back now; 10 min after Start
+  if no Espresso began; 20 s after app start if one was left pending. Busy -> retry every 5 s
+  (give up after 10 min, logged). Dropped without switching if the loaded profile is no
+  longer the cleaning one, or an espresso starts with another profile.
+- One switch path, `_switch_profile`: file check, the core's `::select_profile`, then after
+  1 s the core's `save_settings` + `save_settings_to_de1` (v0.22.0 Load's calls, unchanged).
+- pass_33_offline.tcl (289 checks, GFC-style select_profile stub) FAILS on v0.26.0.
+
+**Safety status: NEW AUTOMATIC WRITE. The switch-back changes the app's loaded profile
+without a tap -- only back to the profile loaded at Start, only while the cleaning profile
+is still loaded and the machine is idle. Writes: the app's settings via the core's
+save_settings, the profile to the machine via save_settings_to_de1, and MT's own settings.tdb
+(`run_restore`). Never starts a flow; profile files are only read.**
+
 ## v0.26.0 - 2026-09-25 - Pass 32: Steps page (instructions + one green action) - verify.sh PASS 2026-09-25 on run 1 (five page dumps incl. Steps + logcat clean; tablet screenshots: Detail Start, linked + unlinked Steps, Back chain)
 
 Base: v0.25.0. Owner: like Open Descale, a page to read the instructions, then run it.

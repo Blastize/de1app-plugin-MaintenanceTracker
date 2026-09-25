@@ -267,6 +267,8 @@ namespace eval ::plugins::MaintenanceTracker {
         # firmware's CleanSoak substate alone is a fixed 60s
         # (de1app-core/machine.tcl:630); descales run many minutes.
         if {![info exists settings(auto_record)]}            { set settings(auto_record) 1 }
+        # v0.27.0: a pending switch-back ("" = none), see start_profile_run.
+        if {![info exists settings(run_restore)]}            { set settings(run_restore) "" }
         if {![info exists settings(auto_clean_min_s)]}       { set settings(auto_clean_min_s) 90 }
         if {![info exists settings(auto_descale_min_s)]}     { set settings(auto_descale_min_s) 300 }
         if {![info exists settings(auto_bf_shot_min_s)]}     { set settings(auto_bf_shot_min_s) 15 }
@@ -889,6 +891,8 @@ namespace eval ::plugins::MaintenanceTracker {
                 set _cycle_state $this
                 set _cycle_enter $now
             }
+            # v0.27.0: the profile-run switch-back watches Espresso too.
+            _run_on_state $this $prev
             # Espresso timing for the cleaning-profile backflush check,
             # measured here and consumed by _on_flow_complete.
             if {$this eq "Espresso"} {
@@ -935,6 +939,11 @@ namespace eval ::plugins::MaintenanceTracker {
             }
         } err]} {
             catch { msg "MaintenanceTracker: flow-complete handler error: $err" }
+        }
+        # v0.27.0: AFTER the auto-record above (it reads the cleaning
+        # profile's beverage_type) -- schedule the switch-back.
+        if {[catch { _run_on_flow_complete } err]} {
+            catch { msg "MaintenanceTracker: switch-back scheduling error: $err" }
         }
         return
     }
@@ -3206,34 +3215,23 @@ namespace eval ::plugins::MaintenanceTracker {
         return "started"
     }
 
-    # Public: load the tracker's linked profile into the app (the
-    # machine receives it on the debounced send). Returns 1 on success.
-    proc load_linked_profile {id} {
+    # v0.27.0: the ONE way this plugin changes the app's profile (Load,
+    # Start, and the automatic switch-back all come here): file check
+    # first (v0.24.1), the core's select_profile, then the debounced
+    # save + send to the machine (DrinkMenu v1.16.0's To-machine tap).
+    # Returns "" on success, else the reason for the page's message line.
+    proc _switch_profile {fn} {
         variable prof_send_id
-        set prof [_item_profile $id]
-        if {$prof eq ""} { return 0 }
-        lassign $prof fn title
-        set busy [_machine_busy]
-        if {$busy ne ""} {
-            _set_prof_note "[translate {Machine busy}] ($busy). [translate {Wait until it is idle.}]"
-            return 0
-        }
-        # v0.24.1: never hand the core a missing file -- see
-        # _profile_file_exists. Nothing is called, saved or sent.
         if {[_profile_file_exists $fn] eq "0"} {
-            catch { msg -WARN "MaintenanceTracker: linked profile '$fn' for '$id' has no profiles/$fn.tcl; not loading" }
-            _set_prof_note [translate "Profile file missing. Unlink and link it again."]
-            return 0
+            return [translate "Profile file missing. Unlink and link it again."]
         }
         set r ""
         if {[catch { set r [::select_profile $fn] } err]} {
             catch { msg "MaintenanceTracker: select_profile '$fn' failed: $err" }
-            _set_prof_note [translate "Could not load the profile (see the log)."]
-            return 0
+            return [translate "Could not load the profile (see the log)."]
         }
         if {$r eq "-1"} {
-            _set_prof_note [translate "Profile file missing. Unlink and link it again."]
-            return 0
+            return [translate "Profile file missing. Unlink and link it again."]
         }
         catch { after cancel $prof_send_id }
         set prof_send_id [after 1000 {
@@ -3244,9 +3242,273 @@ namespace eval ::plugins::MaintenanceTracker {
                 catch { msg "MaintenanceTracker: could not send the machine settings: $err" }
             }
         }]
+        return ""
+    }
+
+    # Public: load the tracker's linked profile into the app (the
+    # machine receives it on the debounced send). Returns 1 on success.
+    proc load_linked_profile {id} {
+        set prof [_item_profile $id]
+        if {$prof eq ""} { return 0 }
+        lassign $prof fn title
+        set busy [_machine_busy]
+        if {$busy ne ""} {
+            _set_prof_note "[translate {Machine busy}] ($busy). [translate {Wait until it is idle.}]"
+            return 0
+        }
+        # v0.24.1: never hand the core a missing file (logged here, the
+        # check itself lives in _switch_profile).
+        if {[_profile_file_exists $fn] eq "0"} {
+            catch { msg -WARN "MaintenanceTracker: linked profile '$fn' for '$id' has no profiles/$fn.tcl; not loading" }
+        }
+        set why [_switch_profile $fn]
+        if {$why ne ""} {
+            _set_prof_note $why
+            return 0
+        }
         catch { msg "MaintenanceTracker: loaded linked profile '$fn' for '$id'" }
         _set_prof_note "[translate {Loaded:}] $title. [translate {Press the espresso button on the machine.}]"
         return 1
+    }
+
+    # ------------------------------------------------------------------
+    #  Profile run with switch-back (Pass 33, v0.27.0). Start on a
+    #  profile-linked tracker's Steps page remembers the loaded (espresso)
+    #  profile, loads the cleaning profile and asks for the group head's
+    #  espresso button (a GHC machine refuses tablet-started espresso:
+    #  de1app-core machine.tcl:936, vars.tcl:3476). The remembered profile
+    #  comes back:
+    #    - 5 s after the cleaning run's after_flow_complete (the core
+    #      saves the shot file and MT auto-records in that same event, so
+    #      the profile must still be the cleaning one then), or 20 s after
+    #      the Espresso state ends if the run never reached the pour;
+    #    - on "Switch back now";
+    #    - 10 minutes after Start if the group head was never pressed;
+    #    - on the next app start, if the app restarted in between.
+    #  Never while the machine is busy (retries every 5 s), and only when
+    #  the cleaning profile is still the loaded one -- a profile the user
+    #  picked meanwhile is theirs, and the switch-back is dropped. The
+    #  pending switch-back is persisted in settings(run_restore) so a
+    #  restart cannot strand the cleaning profile.
+    # ------------------------------------------------------------------
+
+    variable run_timeout_s 600
+    variable run_started 0
+    variable _run_timeout_id ""
+    variable _run_restore_id ""
+    variable _run_retry_id ""
+    variable _run_tries 0
+
+    # The pending switch-back as a dict, or "" when none.
+    proc _run_pending {} {
+        variable settings
+        set rr ""
+        catch { set rr $settings(run_restore) }
+        if {![string is list $rr] || [llength $rr] % 2 != 0 || ![dict exists $rr prev_fn] \
+                || ![dict exists $rr clean_fn]} {
+            return ""
+        }
+        return $rr
+    }
+
+    proc _run_pending_for {id} {
+        set rr [_run_pending]
+        if {$rr eq ""} { return 0 }
+        return [expr {[dict exists $rr item] && [dict get $rr item] eq $id}]
+    }
+
+    proc _loaded_profile {} {
+        set fn ""
+        catch { set fn [string trim $::settings(profile_filename)] }
+        return $fn
+    }
+
+    proc _cancel_run_timers {} {
+        variable _run_timeout_id
+        variable _run_restore_id
+        variable _run_retry_id
+        foreach v {_run_timeout_id _run_restore_id _run_retry_id} {
+            set idv [set $v]
+            if {$idv ne ""} { catch { after cancel $idv } }
+            set $v ""
+        }
+    }
+
+    proc _clear_run {} {
+        variable settings
+        variable run_started
+        variable _run_tries
+        _cancel_run_timers
+        set run_started 0
+        set _run_tries 0
+        set settings(run_restore) ""
+        save_settings
+    }
+
+    # Public: the Steps page's Start on a profile-linked tracker. Returns
+    # "armed" or "refused" (the reason lands in the message line).
+    proc start_profile_run {id} {
+        variable settings
+        variable run_started
+        variable run_timeout_s
+        variable _run_timeout_id
+        set prof [_item_profile $id]
+        if {$prof eq ""} { return "refused" }
+        lassign $prof clean_fn clean_title
+        set busy [_machine_busy]
+        if {$busy ne ""} {
+            _set_prof_note "[translate {Machine busy}] ($busy). [translate {Wait until it is idle.}]"
+            return "refused"
+        }
+        if {[_profile_file_exists $clean_fn] eq "0"} {
+            _set_prof_note [translate "Profile file missing. Unlink and link it again."]
+            return "refused"
+        }
+        set changed 0
+        catch { set changed $::settings(profile_has_changed) }
+        if {$changed eq "1"} {
+            _set_prof_note [translate "Your current profile has unsaved changes. Save it first, then tap Start."]
+            return "refused"
+        }
+        set cur [_loaded_profile]
+        set cur_title $cur
+        catch {
+            set t [string trim $::settings(profile_title)]
+            if {$t ne ""} { set cur_title $t }
+        }
+        # The profile to come back to. A switch-back already pending (a
+        # cleaning profile loaded by an earlier Start) keeps ITS espresso
+        # profile -- never "come back" to a cleaning profile.
+        set rr [_run_pending]
+        if {$rr ne "" && [string equal -nocase $cur [dict get $rr clean_fn]]} {
+            set prev_fn [dict get $rr prev_fn]
+            set prev_title [dict get $rr prev_title]
+        } elseif {[string equal -nocase $cur $clean_fn]} {
+            _set_prof_note [translate "The cleaning profile is already loaded. Pick your espresso profile in the app first, so it can come back afterwards."]
+            return "refused"
+        } else {
+            set prev_fn $cur
+            set prev_title $cur_title
+        }
+        if {$prev_fn eq "" || [_profile_file_exists $prev_fn] eq "0"} {
+            _set_prof_note [translate "Your current profile has no saved file, so it could not come back. Pick a saved profile first."]
+            return "refused"
+        }
+        _cancel_run_timers
+        set settings(run_restore) [dict create prev_fn $prev_fn prev_title $prev_title \
+            clean_fn $clean_fn clean_title $clean_title item $id ts [clock seconds]]
+        save_settings
+        set why [_switch_profile $clean_fn]
+        if {$why ne ""} {
+            _clear_run
+            _set_prof_note $why
+            return "refused"
+        }
+        set run_started 0
+        set _run_timeout_id [after [expr {$run_timeout_s * 1000}] ::plugins::MaintenanceTracker::_run_timeout]
+        catch { msg -NOTICE "MaintenanceTracker: run armed for '$id': '$clean_fn' loaded, '$prev_fn' comes back after the run (or in [expr {$run_timeout_s / 60}] min)" }
+        _refresh_action_pages
+        return "armed"
+    }
+
+    # Public: "Switch back now".
+    proc cancel_profile_run {} {
+        if {[_run_pending] eq ""} { return 0 }
+        _restore_profile cancel
+        return 1
+    }
+
+    proc _run_timeout {} {
+        variable _run_timeout_id
+        variable run_started
+        set _run_timeout_id ""
+        if {!$run_started} { _restore_profile timeout }
+    }
+
+    # Switch back to the remembered profile. Idempotent; never throws.
+    proc _restore_profile {reason} {
+        variable _run_retry_id
+        variable _run_tries
+        set _run_retry_id ""
+        if {[catch {
+            set rr [_run_pending]
+            if {$rr ne ""} {
+                set busy [_machine_busy]
+                if {$busy ne "" && $_run_tries < 120} {
+                    incr _run_tries
+                    set _run_retry_id [after 5000 [list ::plugins::MaintenanceTracker::_restore_profile $reason]]
+                } elseif {$busy ne ""} {
+                    catch { msg -WARN "MaintenanceTracker: switch-back gave up, machine busy ($busy) for 10 min; '[dict get $rr clean_fn]' stays loaded" }
+                    _clear_run
+                    _refresh_action_pages
+                } else {
+                    set cur [_loaded_profile]
+                    set prev_fn [dict get $rr prev_fn]
+                    set prev_title [dict get $rr prev_title]
+                    if {![string equal -nocase $cur [dict get $rr clean_fn]]} {
+                        catch { msg -NOTICE "MaintenanceTracker: switch-back dropped ($reason): '$cur' is loaded now, not the cleaning profile" }
+                        _clear_run
+                    } else {
+                        set why [_switch_profile $prev_fn]
+                        _clear_run
+                        if {$why eq ""} {
+                            catch { msg -NOTICE "MaintenanceTracker: switched back to '$prev_fn' ($reason)" }
+                            _set_prof_note "[translate {Switched back to}] $prev_title."
+                        } else {
+                            catch { msg -WARN "MaintenanceTracker: switch-back to '$prev_fn' failed ($reason): $why" }
+                            _set_prof_note "[translate {Could not switch back to}] $prev_title: $why"
+                        }
+                    }
+                    _refresh_action_pages
+                }
+            }
+        } err]} {
+            catch { msg "MaintenanceTracker: switch-back error: $err" }
+        }
+        return
+    }
+
+    # State-change hook (from _on_state_change).
+    proc _run_on_state {this prev} {
+        variable run_started
+        variable _run_timeout_id
+        variable _run_restore_id
+        set rr [_run_pending]
+        if {$rr eq ""} { return }
+        if {$this eq "Espresso" && $prev ne "Espresso"} {
+            if {[string equal -nocase [_loaded_profile] [dict get $rr clean_fn]]} {
+                set run_started 1
+                if {$_run_timeout_id ne ""} { catch { after cancel $_run_timeout_id } }
+                set _run_timeout_id ""
+                catch { msg -NOTICE "MaintenanceTracker: cleaning run started with '[dict get $rr clean_fn]'" }
+            } else {
+                catch { msg -NOTICE "MaintenanceTracker: a run started with '[_loaded_profile]', not the cleaning profile; switch-back dropped" }
+                _clear_run
+            }
+        } elseif {$prev eq "Espresso" && $this ne "Espresso" && $run_started} {
+            # Fallback for a run that never reached the pour (no
+            # after_flow_complete); the flow-complete path replaces it.
+            if {$_run_restore_id ne ""} { catch { after cancel $_run_restore_id } }
+            set _run_restore_id [after 20000 [list ::plugins::MaintenanceTracker::_restore_profile run-ended]]
+        }
+    }
+
+    # Flow-complete hook (from _on_flow_complete, after auto-record).
+    proc _run_on_flow_complete {} {
+        variable run_started
+        variable _run_restore_id
+        if {[_run_pending] eq "" || !$run_started} { return }
+        if {$_run_restore_id ne ""} { catch { after cancel $_run_restore_id } }
+        set _run_restore_id [after 5000 [list ::plugins::MaintenanceTracker::_restore_profile run-complete]]
+    }
+
+    # App start: a switch-back left pending by a restart. Runs once, 20 s
+    # after main (profile and connection settled).
+    proc _resume_pending_run {} {
+        set rr [_run_pending]
+        if {$rr eq ""} { return }
+        catch { msg -NOTICE "MaintenanceTracker: a switch-back was pending at start; restoring '[dict get $rr prev_fn]'" }
+        _restore_profile restart
     }
 
     # ------------------------------------------------------------------
@@ -3382,7 +3644,7 @@ namespace eval ::plugins::MaintenanceTracker {
     # The link-aware "how to start it" step.
     proc _start_step {kind} {
         switch -- $kind {
-            profile { return [translate "Tap Load profile below, then press the espresso button on the group head."] }
+            profile { return [translate "Tap Start below, then press the espresso button on the group head."] }
             descale { return [translate "Tap Open Descale below and follow the app's steps."] }
             clean   { return [translate "Tap Start Clean below, then tap it again to confirm."] }
         }
@@ -3421,7 +3683,7 @@ namespace eval ::plugins::MaintenanceTracker {
     proc _steps_action_label {id} {
         variable clean_armed
         switch -- [lindex [_item_link $id] 0] {
-            profile { return [translate "Load profile"] }
+            profile { return [expr {[_run_pending_for $id] ? [translate "Switch back now"] : [translate "Start"]}] }
             descale { return [translate "Open Descale"] }
             clean   { return [expr {$clean_armed ? [translate "Yes, start Clean"] : [translate "Start Clean"]}] }
         }
@@ -5289,6 +5551,17 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         dui add dtext $page $cx $msg_y -tags steps_msg -text "" \
             -font $L(font_primary) -width $L(content_w) -fill $L(text_hi) \
             -anchor center -justify center
+        # v0.27.0: while a profile run is armed, the message slot becomes
+        # a hint row: the group head's cup glyph + what to do and when
+        # the espresso profile comes back. Both born hidden.
+        set ghc_w [expr {int(round(64 * $L(scale)))}]
+        dui add dtext $page [expr {$lx + $ghc_w / 2}] $msg_y -tags steps_ghc \
+            -text [::plugins::MaintenanceTracker::_glyph_for mug-hot] \
+            -font $L(font_icon_plate) -fill $L(col_ok) -anchor center -justify center \
+            -initial_state hidden
+        dui add dtext $page [expr {$lx + $ghc_w + $L(md)}] $msg_y -tags steps_hint -text "" \
+            -font $L(font_primary) -width [expr {$L(content_w) - $ghc_w - $L(md)}] \
+            -fill $L(text_hi) -anchor w -justify left -initial_state hidden
 
         # Bottom bar: [Back] ... [Mark done] [<action>]. The action is the
         # page's one primary (green, xwide, right); Mark done (normal)
@@ -5347,7 +5620,27 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
             }
         }
         set armed [expr {$kind eq "clean" && $::plugins::MaintenanceTracker::clean_armed}]
-        if {$armed} {
+        # v0.27.0: a pending profile run for THIS tracker owns the slot.
+        set run [expr {$kind eq "profile" && [::plugins::MaintenanceTracker::_run_pending_for $id]}]
+        if {$run} {
+            set rr [::plugins::MaintenanceTracker::_run_pending]
+            set back_at [clock format [expr {[dict get $rr ts] + $::plugins::MaintenanceTracker::run_timeout_s}] -format %H:%M]
+            if {$::plugins::MaintenanceTracker::run_started} {
+                set hint "[translate {Running. Your profile}] [dict get $rr prev_title] [translate {comes back when it finishes.}]"
+            } else {
+                set hint "[translate {Now press the espresso button on the group head.}] [dict get $rr prev_title] [translate {comes back after the run, or at}] $back_at."
+            }
+            catch { dui item config $page steps_hint -text $hint }
+            catch { dui item config $page steps_msg -text "" }
+            catch { dui item show $page steps_ghc -initial 1 }
+            catch { dui item show $page steps_hint -initial 1 }
+        } else {
+            catch { dui item hide $page steps_ghc -initial 1 }
+            catch { dui item hide $page steps_hint -initial 1 }
+        }
+        if {$run} {
+            # handled above
+        } elseif {$armed} {
             catch { dui item config $page steps_msg \
                 -text [translate "Blind basket and cleaning tablet in the group head? Tap again to start the clean cycle."] \
                 -fill $L(col_red) }
@@ -5360,8 +5653,12 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         # Relabel through the BARE dbutton tag (the wildcard form
         # silently fails on-device).
         catch { dui item config $page mt_sgo -label [::plugins::MaintenanceTracker::_steps_action_label $id] }
+        # v0.27.0: "Switch back now" is a way out, not the go-ahead: normal
+        # face while a run is pending, green otherwise (bare-tag recolor).
+        set face [expr {$run ? $L(btn_fill) : $L(col_ok)}]
+        catch { dui item config $page mt_sgo-btn -fill $face -outline $face }
         catch { dui item show $page mt_sgo* -initial 1 }
-        if {$kind eq ""} {
+        if {$kind eq "" || $run} {
             catch { dui item hide $page mt_sdone* -initial 1 }
         } else {
             catch { dui item show $page mt_sdone* -initial 1 }
@@ -5387,7 +5684,13 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         if {$id eq ""} { return }
         switch -- [lindex [::plugins::MaintenanceTracker::_item_link $id] 0] {
             profile {
-                ::plugins::MaintenanceTracker::load_linked_profile $id
+                # v0.27.0: Start (remember, switch, switch back later) or,
+                # while that run is pending, Switch back now.
+                if {[::plugins::MaintenanceTracker::_run_pending_for $id]} {
+                    ::plugins::MaintenanceTracker::cancel_profile_run
+                } else {
+                    ::plugins::MaintenanceTracker::start_profile_run $id
+                }
             }
             descale {
                 if {[::plugins::MaintenanceTracker::open_linked_descale $id]} { return }
