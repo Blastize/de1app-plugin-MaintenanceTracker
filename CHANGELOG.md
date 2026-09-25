@@ -4,6 +4,23 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.26.0 - 2026-09-25 - Pass 32: Steps page (instructions + one green action) - verify.sh PASS 2026-09-25 on run 1 (five page dumps incl. Steps + logcat clean; tablet screenshots: Detail Start, linked + unlinked Steps, Back chain)
+
+Base: v0.25.0. Owner: like Open Descale, a page to read the instructions, then run it.
+
+- New `MaintenanceTracker_steps` page: title, "Linked to" line, up to 8 numbered steps, one
+  green action (Load profile / Open Descale / Start Clean two-tap / Mark done) and, when
+  linked, a secondary Mark done. Mark done is the Record confirm flow, back to Detail.
+- Steps: the item's own `steps` list if present (nothing writes it yet; Pass 34), else a
+  built-in template chosen by keyword rules on the name (15 templates, owner's wording for
+  Cafetto Evo and Rinza); "{start}" becomes the link-aware start line.
+- Detail: the link row's button is now a green **Start** (opens Steps); Record back to the
+  normal style; the Clean arm and its warning moved to Steps. Armed Undo hides "Linked to:".
+- pass_32_offline.tcl (245 checks) FAILS on v0.25.0, PASSES here.
+
+**Safety status: no new write path and no new machine action. The page reuses the
+existing Load profile / Open Descale / Start Clean procs and the Record confirm flow.**
+
 ## v0.25.0 - 2026-09-25 - Pass 31: list + Detail fixes, Link / Unlink on the Edit page - verify.sh PASS 2026-09-25 on run 2 (four page dumps incl. Edit + logcat clean; tablet screenshots checked: sort, Detail, armed Undo, Edit draft Unlink + Cancel)
 
 Base: v0.24.1. Owner: Unlink sat beside Load profile, same size, easy to hit by mistake.

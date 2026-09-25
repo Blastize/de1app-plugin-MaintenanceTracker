@@ -1352,6 +1352,7 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_confirm MaintenanceTracker_confirm_burr
             MaintenanceTracker_confirm_bottle MaintenanceTracker_detail
             MaintenanceTracker_add MaintenanceTracker_edit
+            MaintenanceTracker_steps
         }
         foreach p $all_pages {
             catch { dui item config $p page_bg -fill $L(page_bg) -outline $L(page_bg) }
@@ -1398,6 +1399,8 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_edit auto_label text_body
             MaintenanceTracker_edit auto_value text_hi
             MaintenanceTracker_edit link_value text_body
+            MaintenanceTracker_steps page_title text_hi
+            MaintenanceTracker_steps steps_sub text_mut
             MaintenanceTracker_edit edit_note text_mut
             MaintenanceTracker_diagnostics page_title text_hi
             MaintenanceTracker_diagnostics subtitle text_mut
@@ -1455,7 +1458,8 @@ namespace eval ::plugins::MaintenanceTracker {
             MaintenanceTracker_confirm {mt_cancel bar_confirm}
             MaintenanceTracker_confirm_burr {minus100 minus10 plus10 plus100 mt_cancel bar_confirm}
             MaintenanceTracker_confirm_bottle {minus1000 minus100 plus100 plus1000 mt_cancel bar_confirm}
-            MaintenanceTracker_detail {btn_edit bar_left mt_hide mt_load bar_undo}
+            MaintenanceTracker_detail {btn_edit bar_left mt_hide bar_undo mt_record}
+            MaintenanceTracker_steps {mt_sback mt_sdone}
             MaintenanceTracker_add {btn_auto unit_toggle step0 step1 step2 step3
                                     hid0 hid1 hid2 hid3 hid4 hid5 mt_cancel mt_save}
             MaintenanceTracker_edit {auto_toggle step0 step1 step2 step3 mt_cancel mt_save
@@ -1707,6 +1711,7 @@ namespace eval ::plugins::MaintenanceTracker {
         dui page add MaintenanceTracker_detail -namespace true -theme default -type fpdialog
         dui page add MaintenanceTracker_add -namespace true -theme default -type fpdialog
         dui page add MaintenanceTracker_edit -namespace true -theme default -type fpdialog
+        dui page add MaintenanceTracker_steps -namespace true -theme default -type fpdialog
         return MaintenanceTracker_settings
     }
 
@@ -2964,9 +2969,17 @@ namespace eval ::plugins::MaintenanceTracker {
     proc _clear_prof_note {} {
         variable prof_note
         set prof_note ""
-        if {[_page_is_current MaintenanceTracker_detail]} {
-            if {[catch { ::dui::pages::MaintenanceTracker_detail::refresh } err]} {
-                catch { msg "MaintenanceTracker: detail refresh failed: $err" }
+        _refresh_action_pages
+    }
+
+    # v0.26.0: the pages that show action notes / the Clean arm (Detail
+    # and, since Pass 32, Steps) repaint only when on screen.
+    proc _refresh_action_pages {} {
+        foreach pg {MaintenanceTracker_detail MaintenanceTracker_steps} {
+            if {[_page_is_current $pg]} {
+                if {[catch { ::dui::pages::${pg}::refresh } err]} {
+                    catch { msg "MaintenanceTracker: $pg refresh failed: $err" }
+                }
             }
         }
     }
@@ -3108,11 +3121,7 @@ namespace eval ::plugins::MaintenanceTracker {
         variable clean_arm_id
         set clean_arm_id ""
         _disarm_clean
-        if {[_page_is_current MaintenanceTracker_detail]} {
-            if {[catch { ::dui::pages::MaintenanceTracker_detail::refresh } err]} {
-                catch { msg "MaintenanceTracker: detail refresh failed: $err" }
-            }
-        }
+        _refresh_action_pages
     }
 
     # Leave this plugin's own dialog stack, one close_dialog per level
@@ -3237,6 +3246,195 @@ namespace eval ::plugins::MaintenanceTracker {
         }]
         catch { msg "MaintenanceTracker: loaded linked profile '$fn' for '$id'" }
         _set_prof_note "[translate {Loaded:}] $title. [translate {Press the espresso button on the machine.}]"
+        return 1
+    }
+
+    # ------------------------------------------------------------------
+    #  Instructions (Pass 32, v0.26.0). Every tracker gets a Steps page:
+    #  numbered instructions plus ONE coloured action (the link's: Load
+    #  profile / Open Descale / Start Clean, or Mark done). Steps come
+    #  from the item's own `steps` list when it has one (the Pass 34
+    #  editor writes it; nothing writes it yet) or from a built-in
+    #  template picked by keywords in the tracker's name, so every user,
+    #  and every custom tracker, starts with sensible steps. "{start}" in
+    #  a template becomes the link-aware "how to start it" line.
+    #  Read-only: nothing on this page writes anything new.
+    # ------------------------------------------------------------------
+
+    variable steps_max 8
+    variable steps_item ""
+    variable step_templates {
+        backflush_detergent {
+            "Put the blind basket in the portafilter."
+            "Add one scoop of Cafetto Evo powder (or your cleaner's dose) to the basket."
+            "Add a little warm water and stir until the powder dissolves."
+            "Lock the portafilter into the group head."
+            "{start}"
+            "When it finishes, rinse the basket and run a water backflush to clear the detergent."
+        }
+        backflush_water {
+            "Put the clean blind basket in the portafilter, with no detergent."
+            "Lock the portafilter into the group head."
+            "{start}"
+            "When it finishes, remove the portafilter and run a short flush."
+        }
+        steam_wand_soak {
+            "Dissolve half a Rinza tablet in 500 ml of water in a milk jug."
+            "Submerge the tip of the steam wand in the solution."
+            "Leave it to soak for 15 to 30 minutes."
+            "Wipe the wand and purge steam for a few seconds to rinse it."
+        }
+        ball_joint_grease {
+            "Let the steam wand cool down completely."
+            "Apply a thin layer of food-safe silicone grease to the ball joint O-rings."
+            "Move the wand through its full range to spread the grease."
+        }
+        descale {
+            "Mix the descaling solution (citric acid: use the dose on the pack)."
+            "{start}"
+            "Afterwards, rinse the water tank and refill it with fresh water."
+        }
+        drip_tray {
+            "Pull out the drip tray and lift off its grate."
+            "Empty it and wash both parts in warm soapy water."
+            "Rinse, dry and slide the tray back in."
+        }
+        water_tank {
+            "Lift out the water tank and empty it."
+            "Wash it with warm water and a soft brush, leaving no soap behind."
+            "Rinse it well, refill with fresh water and put it back."
+        }
+        drain {
+            "Check the drain pipe for coffee build-up and kinks."
+            "Flush it with hot water (a little espresso machine cleaner if it smells)."
+            "Make sure it runs freely into the drain before refitting it."
+        }
+        gasket_change {
+            "Let the machine cool down and remove the portafilter."
+            "Take out the shower screen and pry out the old group gasket."
+            "Clean the gasket seat, then press the new gasket in evenly."
+            "Refit the shower screen and pull a test shot to check for leaks."
+        }
+        group_inspection {
+            "With the machine cool, check the group gasket for cracks, hardness or leaks."
+            "Check the shower screen for coffee build-up."
+            "Wipe the group head with a damp cloth or a group brush."
+            "Plan a gasket change if it leaks or feels hard."
+        }
+        burr_clean {
+            "Unplug the grinder."
+            "Open the burr chamber and brush the burrs and the chute clean."
+            "Reassemble, then grind a few beans to purge it."
+        }
+        burr_install {
+            "Unplug the grinder and remove the old burrs."
+            "Clean the burr carrier and the chamber."
+            "Fit the new burrs and re-zero the grind setting."
+            "Grind a few doses to season them before dialling in."
+        }
+        water_filter {
+            "Remove the old filter cartridge."
+            "Soak or flush the new cartridge as its instructions say."
+            "Fit it and run some water through before the next shot."
+        }
+        water_supply {
+            "Swap the empty water bottle for a full one."
+            "Check that the intake tube reaches the bottom and the lid seals."
+            "Tap Mark done to restart the bottle meter."
+        }
+        generic {
+            "Do the maintenance task."
+            "Check that everything is refitted, clean and dry."
+            "Tap Mark done to record it."
+        }
+    }
+
+    # Keyword rules, first match wins (the tracker's name, lower-cased,
+    # plus its id). Grease before steam wand, water before backflush's
+    # detergent default, supply/bottle before tank/filter.
+    variable step_rules {
+        {ball joint|grease|silicone}                           ball_joint_grease
+        {backflush.*water|water.*backflush}                    backflush_water
+        {backflush|back flush|cafiza|cafetto|detergent}        backflush_detergent
+        {rinza|steam wand|steam tip|wand}                      steam_wand_soak
+        {descal|citric}                                        descale
+        {drip tray|drip}                                       drip_tray
+        {water supply|bottle|water_bottle}                     water_supply
+        {water tank|tank}                                      water_tank
+        {drain}                                                drain
+        {inspect}                                              group_inspection
+        {gasket.*(change|replace|new)|(change|replace|new).*gasket|group_gasket} gasket_change
+        {gasket|group head|inspect}                            group_inspection
+        {burr.*(install|replace|new|change)|burr_install}      burr_install
+        {burr|grinder}                                         burr_clean
+        {filter}                                               water_filter
+    }
+
+    proc _steps_template_id {id} {
+        variable step_rules
+        set hay [string tolower "[_item_label $id] $id"]
+        foreach {re tpl} $step_rules {
+            if {[regexp -- $re $hay]} { return $tpl }
+        }
+        return generic
+    }
+
+    # The link-aware "how to start it" step.
+    proc _start_step {kind} {
+        switch -- $kind {
+            profile { return [translate "Tap Load profile below, then press the espresso button on the group head."] }
+            descale { return [translate "Tap Open Descale below and follow the app's steps."] }
+            clean   { return [translate "Tap Start Clean below, then tap it again to confirm."] }
+        }
+        return [translate "Load the cleaning profile in the app, then press the espresso button on the group head."]
+    }
+
+    # The tracker's steps, ready to show: its own list when it has one
+    # (trimmed, empties dropped, capped), else the template; "{start}"
+    # resolved for the tracker's current link.
+    proc _item_steps {id} {
+        variable settings
+        variable step_templates
+        variable steps_max
+        set own {}
+        if {[info exists settings(item_$id)] && [dict exists $settings(item_$id) steps]} {
+            foreach st [dict get $settings(item_$id) steps] {
+                set st [string trim $st]
+                if {$st ne ""} { lappend own [string range $st 0 119] }
+            }
+        }
+        if {[llength $own] > 0} {
+            set raw $own
+        } else {
+            set raw [dict get $step_templates [_steps_template_id $id]]
+        }
+        set kind [lindex [_item_link $id] 0]
+        set out {}
+        foreach st [lrange $raw 0 [expr {$steps_max - 1}]] {
+            if {$st eq "{start}"} { set st [_start_step $kind] }
+            lappend out [translate $st]
+        }
+        return $out
+    }
+
+    # The Steps page's coloured action for a tracker's link.
+    proc _steps_action_label {id} {
+        variable clean_armed
+        switch -- [lindex [_item_link $id] 0] {
+            profile { return [translate "Load profile"] }
+            descale { return [translate "Open Descale"] }
+            clean   { return [expr {$clean_armed ? [translate "Yes, start Clean"] : [translate "Start Clean"]}] }
+        }
+        return [translate "Mark done"]
+    }
+
+    proc open_steps {id} {
+        variable steps_item
+        variable settings
+        if {![info exists settings(item_$id)]} { return 0 }
+        set steps_item $id
+        _disarm_clean
+        open_page MaintenanceTracker_steps
         return 1
     }
 
@@ -4103,10 +4301,14 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
         dui add dtext $page $L(value_x) $prof_mid -tags prof_value -text "" \
             -font $L(font_primary) -width [expr {$load_x0 - $L(lg) - $L(value_x)}] \
             -fill $L(text_hi) -anchor w -justify left
+        # v0.26.0 (Pass 32): the row's button is always "Start" (primary,
+        # green): it opens the tracker's Steps page, where the link's own
+        # action (Load profile / Open Descale / Start Clean / Mark done)
+        # sits under the instructions.
         dui add dbutton $page $load_x0 $prof_y0 $rx $prof_y1 \
-            -tags mt_load -label [translate "Load profile"] \
-            -command ::dui::pages::MaintenanceTracker_detail::load_click \
-            -label_font $L(font_button) -style mt_btn -initial_state hidden
+            -tags mt_start -label [translate "Start"] \
+            -command ::dui::pages::MaintenanceTracker_detail::start_click \
+            -label_font $L(font_button) -style mt_btn_primary -initial_state hidden
 
         # Confirm-mode message (empty in view mode), above the bottom bar.
         # v0.22.0: also the linked-profile outcome note for 4 s.
@@ -4149,7 +4351,7 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
         dui add dbutton $page $rec_x0 $L(bar_y0) $rx $L(bar_y1) \
             -tags mt_record -label [translate "Record"] \
             -command ::dui::pages::MaintenanceTracker_detail::record_click \
-            -label_font $L(font_button) -style mt_btn_primary -initial_state hidden
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
     }
 
     proc refresh {} {
@@ -4170,7 +4372,7 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             catch { dui item hide $page bar_undo* -initial 1 }
             catch { dui item hide $page mt_hide* -initial 1 }
             catch { dui item hide $page btn_edit* -initial 1 }
-            catch { dui item hide $page mt_load* -initial 1 }
+            catch { dui item hide $page mt_start* -initial 1 }
             catch { dui item hide $page mt_record* -initial 1 }
             catch { dui item config $page prof_value -text "" }
             catch { dui item config $page bar_left -label [translate "Back"] }
@@ -4297,7 +4499,8 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             # v0.22.0: the profile row's controls step aside too.
             # v0.23.0: and a mode switch disarms an armed Clean.
             ::plugins::MaintenanceTracker::_disarm_clean
-            catch { dui item hide $page mt_load* -initial 1 }
+            catch { dui item hide $page mt_start* -initial 1 }
+            catch { dui item hide $page prof_label -initial 1 }
             catch { dui item config $page prof_value -text "" }
         } else {
             catch { dui item config $page bar_left -label [translate "Back"] }
@@ -4321,13 +4524,8 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             catch { dui item config $page mt_hide* -state [expr {$hide_capped ? "disabled" : "normal"}] }
             set link [::plugins::MaintenanceTracker::_item_link $id]
             set kind [lindex $link 0]
-            set armed [expr {$kind eq "clean" && $::plugins::MaintenanceTracker::clean_armed}]
-            if {$armed} {
-                # v0.23.0: the armed Clean's warning outranks every note.
-                catch { dui item config $page confirm_msg \
-                    -text [translate "Blind basket and cleaning tablet in the group head? Tap again to start the clean cycle."] \
-                    -fill $L(col_red) }
-            } elseif {$hide_capped} {
+            # v0.26.0: the Clean arm lives on the Steps page now.
+            if {$hide_capped} {
                 catch { dui item config $page confirm_msg \
                     -text [translate "Hide is unavailable: six trackers are already hidden. Restore one from the New Tracker page first."] \
                     -fill $L(text_mut) }
@@ -4340,33 +4538,17 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
                 catch { dui item config $page confirm_msg -text "" }
             }
             # v0.22.0 linked profile row; v0.23.0 any of three kinds.
-            # v0.25.0: display + one action only; Link / Unlink live on
-            # the Edit page.
+            # v0.25.0: display only; Link / Unlink live on the Edit page.
+            # v0.26.0: Start (every tracker) opens the Steps page.
+            catch { dui item show $page prof_label -initial 1 }
             if {$kind eq ""} {
                 catch { dui item config $page prof_value \
                     -text [translate "none -- link one on the Edit page"] -fill $L(text_mut) }
-                catch { dui item hide $page mt_load* -initial 1 }
             } else {
-                switch -- $kind {
-                    profile {
-                        set vtxt [::plugins::MaintenanceTracker::_short_text [lindex $link 2] 40]
-                        set atxt [translate "Load profile"]
-                    }
-                    descale {
-                        set vtxt [translate "Descale (app)"]
-                        set atxt [translate "Open Descale"]
-                    }
-                    default {
-                        set vtxt [translate "Clean cycle (app)"]
-                        set atxt [expr {$armed ? [translate "Yes, start Clean"] : [translate "Start Clean"]}]
-                    }
-                }
-                catch { dui item config $page prof_value -text $vtxt -fill $L(text_hi) }
-                # Relabel through the BARE dbutton tag (the wildcard
-                # form silently fails on-device).
-                catch { dui item config $page mt_load -label $atxt }
-                catch { dui item show $page mt_load* -initial 1 }
+                catch { dui item config $page prof_value \
+                    -text [::plugins::MaintenanceTracker::_link_text $link] -fill $L(text_hi) }
             }
+            catch { dui item show $page mt_start* -initial 1 }
         }
     }
 
@@ -4379,27 +4561,13 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
         ::plugins::MaintenanceTracker::request_record $id MaintenanceTracker_detail
     }
 
-    # v0.23.0: the action button acts on whatever the tracker links.
-    # A page the tap has left (Descale opened, Clean started) is not
-    # repainted.
-    proc load_click {} {
+    # v0.26.0 (Pass 32): Start opens the tracker's Steps page; the link's
+    # action lives there now. View mode only.
+    proc start_click {} {
         if {$::plugins::MaintenanceTracker::detail_mode ne "view"} { return }
-        set id $::plugins::MaintenanceTracker::detail_item
-        switch -- [lindex [::plugins::MaintenanceTracker::_item_link $id] 0] {
-            descale {
-                if {[::plugins::MaintenanceTracker::open_linked_descale $id]} { return }
-            }
-            clean {
-                if {[::plugins::MaintenanceTracker::clean_tap $id] eq "started"} { return }
-            }
-            default {
-                ::plugins::MaintenanceTracker::load_linked_profile $id
-            }
-        }
-        if {[catch { refresh } err]} {
-            catch { msg "MaintenanceTracker: detail refresh failed: $err" }
-        }
+        ::plugins::MaintenanceTracker::open_steps $::plugins::MaintenanceTracker::detail_item
     }
+
     # v0.12.0 -> v0.15.0: Edit, any tracker, view mode only.
     proc edit_click {} {
         set id $::plugins::MaintenanceTracker::detail_item
@@ -5072,6 +5240,177 @@ namespace eval ::dui::pages::MaintenanceTracker_edit {
         set ::plugins::MaintenanceTracker::edit_delete_armed 0
         if {[catch { refresh } err]} {
             catch { msg "MaintenanceTracker: edit refresh failed: $err" }
+        }
+    }
+}
+
+# ===========================================================================
+#  Steps page -- Pass 32 (v0.26.0). The tracker's instructions, numbered,
+#  and ONE coloured action under them: the link's own (Load profile /
+#  Open Descale / Start Clean, two-tap) or Mark done. Mark done (and a
+#  linked tracker's secondary Mark done) is the list's confirm flow,
+#  returning to Detail. Nothing here writes anything new.
+# ===========================================================================
+
+namespace eval ::dui::pages::MaintenanceTracker_steps {
+
+    proc setup {} {
+        set page [namespace tail [namespace current]]
+        upvar #0 ::plugins::MaintenanceTracker::L L
+        ::plugins::MaintenanceTracker::_page_bg $page
+        set lx $L(left_x)
+        set rx $L(right_x)
+        set cx [expr {($lx + $rx) / 2}]
+
+        dui add dtext $page $cx $L(header_solo_title_y) -tags page_title -text "" \
+            -font $L(font_title) -width $L(content_w) -fill $L(text_hi) \
+            -anchor center -justify center
+        set sub_y [expr {int(round(96 * $L(scale)))}]
+        dui add dtext $page $cx $sub_y -tags steps_sub -text "" \
+            -font $L(font_caption) -width $L(content_w) -fill $L(text_mut) \
+            -anchor center -justify center
+
+        # Up to steps_max rows, 58 ref apart from 140: a number column and
+        # the text (body, may wrap to two lines = 46 ref < pitch). The last
+        # row starts 546 and ends by 592; the message slot is 624..672.
+        set num_w [expr {int(round(44 * $L(scale)))}]
+        set pitch [expr {int(round(58 * $L(scale)))}]
+        set y0 [expr {int(round(140 * $L(scale)))}]
+        for {set i 0} {$i < $::plugins::MaintenanceTracker::steps_max} {incr i} {
+            set y [expr {$y0 + $i * $pitch}]
+            dui add dtext $page $lx $y -tags stepn$i -text "" \
+                -font $L(font_primary) -fill $L(col_ok) -anchor nw -justify left
+            dui add dtext $page [expr {$lx + $num_w}] $y -tags stept$i -text "" \
+                -font $L(font_body) -width [expr {$L(content_w) - $num_w}] \
+                -fill $L(text_hi) -anchor nw -justify left
+        }
+
+        set msg_y [expr {int(round(648 * $L(scale)))}]
+        dui add dtext $page $cx $msg_y -tags steps_msg -text "" \
+            -font $L(font_primary) -width $L(content_w) -fill $L(text_hi) \
+            -anchor center -justify center
+
+        # Bottom bar: [Back] ... [Mark done] [<action>]. The action is the
+        # page's one primary (green, xwide, right); Mark done (normal)
+        # shows only when the action is something else.
+        set go_x0 [expr {$rx - $L(btn_w_xwide)}]
+        set done_x1 [expr {$go_x0 - $L(lg)}]
+        dui add dbutton $page $lx $L(bar_y0) [expr {$lx + $L(btn_w_std)}] $L(bar_y1) \
+            -tags mt_sback -label [translate "Back"] \
+            -command ::dui::pages::MaintenanceTracker_steps::back_click \
+            -label_font $L(font_button) -style mt_btn
+        dui add dbutton $page [expr {$done_x1 - $L(btn_w_wide)}] $L(bar_y0) $done_x1 $L(bar_y1) \
+            -tags mt_sdone -label [translate "Mark done"] \
+            -command ::dui::pages::MaintenanceTracker_steps::done_click \
+            -label_font $L(font_button) -style mt_btn -initial_state hidden
+        dui add dbutton $page $go_x0 $L(bar_y0) $rx $L(bar_y1) \
+            -tags mt_sgo -label [translate "Mark done"] \
+            -command ::dui::pages::MaintenanceTracker_steps::go_click \
+            -label_font $L(font_button) -style mt_btn_primary -initial_state hidden
+    }
+
+    proc refresh {} {
+        set page [namespace tail [namespace current]]
+        upvar #0 ::plugins::MaintenanceTracker::L L
+        set id $::plugins::MaintenanceTracker::steps_item
+        set n_max $::plugins::MaintenanceTracker::steps_max
+        if {$id eq "" || ![info exists ::plugins::MaintenanceTracker::settings(item_$id)]} {
+            catch { dui item config $page page_title -text [translate "Nothing selected"] }
+            catch { dui item config $page steps_sub -text "" }
+            for {set i 0} {$i < $n_max} {incr i} {
+                catch { dui item config $page stepn$i -text "" }
+                catch { dui item config $page stept$i -text "" }
+            }
+            catch { dui item config $page steps_msg -text "" }
+            catch { dui item hide $page mt_sdone* -initial 1 }
+            catch { dui item hide $page mt_sgo* -initial 1 }
+            return
+        }
+        catch { dui item config $page page_title \
+            -text [::plugins::MaintenanceTracker::_item_label $id] }
+        set link [::plugins::MaintenanceTracker::_item_link $id]
+        set kind [lindex $link 0]
+        if {$kind eq ""} {
+            set sub [translate "Not linked to a machine action -- tap Mark done when you have finished."]
+        } else {
+            set sub "[translate {Linked to:}] [::plugins::MaintenanceTracker::_link_text $link]"
+        }
+        catch { dui item config $page steps_sub -text $sub }
+        set steps [::plugins::MaintenanceTracker::_item_steps $id]
+        for {set i 0} {$i < $n_max} {incr i} {
+            if {$i < [llength $steps]} {
+                catch { dui item config $page stepn$i -text "[expr {$i + 1}]." }
+                catch { dui item config $page stept$i -text [lindex $steps $i] }
+            } else {
+                catch { dui item config $page stepn$i -text "" }
+                catch { dui item config $page stept$i -text "" }
+            }
+        }
+        set armed [expr {$kind eq "clean" && $::plugins::MaintenanceTracker::clean_armed}]
+        if {$armed} {
+            catch { dui item config $page steps_msg \
+                -text [translate "Blind basket and cleaning tablet in the group head? Tap again to start the clean cycle."] \
+                -fill $L(col_red) }
+        } elseif {$::plugins::MaintenanceTracker::prof_note ne ""} {
+            catch { dui item config $page steps_msg \
+                -text $::plugins::MaintenanceTracker::prof_note -fill $L(text_hi) }
+        } else {
+            catch { dui item config $page steps_msg -text "" }
+        }
+        # Relabel through the BARE dbutton tag (the wildcard form
+        # silently fails on-device).
+        catch { dui item config $page mt_sgo -label [::plugins::MaintenanceTracker::_steps_action_label $id] }
+        catch { dui item show $page mt_sgo* -initial 1 }
+        if {$kind eq ""} {
+            catch { dui item hide $page mt_sdone* -initial 1 }
+        } else {
+            catch { dui item show $page mt_sdone* -initial 1 }
+        }
+    }
+
+    proc back_click {} {
+        ::plugins::MaintenanceTracker::_disarm_clean
+        ::plugins::MaintenanceTracker::_return_to_page MaintenanceTracker_detail
+    }
+
+    proc done_click {} {
+        set id $::plugins::MaintenanceTracker::steps_item
+        if {$id eq ""} { return }
+        ::plugins::MaintenanceTracker::_disarm_clean
+        ::plugins::MaintenanceTracker::request_record $id MaintenanceTracker_detail
+    }
+
+    # The coloured action. A page the tap has left (Descale opened, Clean
+    # started, Record's confirm) is not repainted.
+    proc go_click {} {
+        set id $::plugins::MaintenanceTracker::steps_item
+        if {$id eq ""} { return }
+        switch -- [lindex [::plugins::MaintenanceTracker::_item_link $id] 0] {
+            profile {
+                ::plugins::MaintenanceTracker::load_linked_profile $id
+            }
+            descale {
+                if {[::plugins::MaintenanceTracker::open_linked_descale $id]} { return }
+            }
+            clean {
+                if {[::plugins::MaintenanceTracker::clean_tap $id] eq "started"} { return }
+            }
+            default {
+                done_click
+                return
+            }
+        }
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: steps refresh failed: $err" }
+        }
+    }
+
+    proc show {page_to_hide page_to_show} {
+        # Stuck-flag rule: no armed Clean survives a page switch.
+        ::plugins::MaintenanceTracker::_disarm_clean
+        if {![::plugins::MaintenanceTracker::_page_is_current MaintenanceTracker_steps]} { return }
+        if {[catch { refresh } err]} {
+            catch { msg "MaintenanceTracker: steps refresh failed: $err" }
         }
     }
 }

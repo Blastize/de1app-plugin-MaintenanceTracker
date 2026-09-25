@@ -1,15 +1,19 @@
 # Maintenance Tracker
 
 **Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
-Version 0.25.0 · a plugin for the Decent DE1app · by Blastize
+Version 0.26.0 · a plugin for the Decent DE1app · by Blastize
 
 ![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
 
 **Everything on one page.** Each tracker shows shots or days since it was last done and a bar that goes amber, then red. Backflush and descale record themselves when the machine runs a real clean or descale cycle.
 
-![Tracker detail: the record history, a linked cleaning profile with Load profile, and a green Record button](docs/detail.png)
+![Tracker detail: the record history, a linked cleaning profile and a green Start button](docs/detail.png)
 
-**Tracker detail.** The history of records, a green Record button, undo for the last one, and the tracker's link: a profile (tap Load profile and it is on the machine, ready for the run), or the app's own Descale or Clean action. Links are set on the Edit page.
+**Tracker detail.** The history of records, Record and undo for the last one, and the tracker's link: a profile, or the app's own Descale or Clean action (links are set on the Edit page). The green Start button opens the steps.
+
+![Steps: numbered instructions for a water backflush, with Mark done and a green Load profile button](docs/steps.png)
+
+**Steps.** Numbered instructions for the job and one green button to do it: load the linked profile, open the app's Descale, start its Clean cycle, or mark the task done.
 
 ![New Tracker: name, count by days, shots or ml, threshold and icon](docs/new_tracker.png)
 
@@ -44,7 +48,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.25.0** (Pass 31)
+Author: **Blastize** · Current version: **0.26.0** (Pass 32)
 
 ## What it will do (target design)
 
@@ -58,8 +62,18 @@ Author: **Blastize** · Current version: **0.25.0** (Pass 31)
 - A small public API (`status_summary`, `open_page`) lets the Lumen skin
   show a notification dot near a maintenance icon.
 
-## What it does right now (v0.25.0 — Pass 31)
+## What it does right now (v0.26.0 — Pass 32)
 
+- **Step-by-step instructions** (v0.26.0): every tracker's Detail page has a
+  green **Start** button that opens its Steps page: numbered instructions
+  and one green button for the job: **Load profile**, **Open Descale** or
+  **Start Clean** for a linked tracker, **Mark done** otherwise (a linked
+  tracker has Mark done beside it too). The steps come from a built-in
+  library matched to the tracker's name (backflush with detergent or water,
+  Rinza steam wand soak, descale, drip tray, water tank, drain, group head,
+  burrs, water filter, water bottle, ball-joint grease, and a generic set),
+  and the "how to start" step follows the tracker's link. Editing steps
+  comes later.
 - **Tidier Detail page, links on the Edit page** (v0.25.0): Link profile,
   Link Descale, Link Clean and Unlink moved to the Edit page, beside the
   name, and only take effect when you tap Save (Cancel undoes a stray

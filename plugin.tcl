@@ -1,6 +1,12 @@
 #
 # Maintenance Tracker -- DE1app plugin manifest
 #
+# Pass 32 (v0.26.0): every tracker gets a Steps page -- numbered
+# instructions (built-in templates picked by keywords in its name,
+# "{start}" resolved for its link) and one green action: Load profile,
+# Open Descale, Start Clean or Mark done. Detail's Start opens it. No
+# new write behavior.
+#
 # Pass 31 (v0.25.0): tracker list sorts worst first by how close each
 # tracker is to due (was: by status only, creation order inside it).
 # Detail: Link / Unlink moved to the Edit page (a draft, applied on Save),
@@ -226,7 +232,7 @@ namespace eval ::plugins::MaintenanceTracker {
     variable contact     "n/a"
     # Bare number, no "v" prefix (ShotHistoryEditor v0.6.4 lesson: the
     # startup log message prepends one).
-    variable version     "0.25.0"
+    variable version     "0.26.0"
     variable name        "Maintenance Tracker"
     variable description "Tracks machine maintenance (backflush, descale, gasket, burrs, water filter, water bottle level, plus your own custom trackers) from user-recorded events and the machine's own dispense reports. Read-only by design; writes only its own settings file."
 
@@ -299,7 +305,7 @@ proc ::plugins::MaintenanceTracker::main {} {
             set hooked 1
         }
     }
-    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 31: worst-first by due fraction, Record on Detail, Link / Unlink on Edit; links to a profile or the app's Descale / Clean, SDB read-only)" }
+    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 32: Steps page with instructions and one green action; links to a profile or the app's Descale / Clean, SDB read-only)" }
     return
 }
 
