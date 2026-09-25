@@ -4,6 +4,28 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.24.0 - 2026-09-25 - Pass 29: linked cleaning profiles auto-record their tracker - verify.sh PASS 2026-09-25 on run 1 (three page dumps + logcat clean; Cafiza card shows AUTO-RECORD on the tablet; owner checklist open)
+
+Base: v0.23.1. Owner, 2026-09-25 16:18: ran "Cleaning/Forward Flush x5 Powder" (loaded from
+"Backflush - Cafiza/Cafetto", linked to it); MT auto-recorded "Backflush - Water" instead. The
+cleaning-profile detector sent every cleaning run to all Clean-cycle trackers and never looked
+at the link (Cafiza's own Auto source was off).
+
+- A finished cleaning-profile run (gates unchanged: auto_record, >= 15 s, beverage_type
+  cleaning) records the trackers linked to the profile loaded at Espresso entry (case-
+  insensitive), and only those, even with Auto off. None linked: every Clean-cycle tracker, as
+  before. Machine Clean / Descale cycles unchanged.
+- Such trackers wear AUTO-RECORD; Detail reads "Auto-records on: <profile>"; Edit's Auto row
+  reads "off (linked profile records)". The profile's beverage type is read from its file
+  (read-only, cached per session).
+- Found, NOT fixed (next pass): Graphical_Flow_Calibrator wraps `::select_profile` and drops
+  its return, so Load profile on a link whose file is gone reports success and sends a
+  half-reset profile. "Backflush - Water" links `Cleaning_forward_flush_x5`, which does not
+  exist -- relink it.
+
+**Safety status: no new write path. Auto events go through the existing `_record_auto` ->
+`save_settings` (settings.tdb only). Profile files are only read; nothing else is touched.**
+
 ## v0.23.1 - 2026-09-23 - Pass 28: stale show hooks no longer repaint - verify.sh PASS 2026-09-23 on run 1 (three page dumps + logcat clean; list page renders in full; owner re-tap of Open Descale open)
 
 Base: v0.23.0. Owner, tablet screenshot 23:09: Open Descale shows the app's

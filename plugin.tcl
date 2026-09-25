@@ -1,6 +1,12 @@
 #
 # Maintenance Tracker -- DE1app plugin manifest
 #
+# Pass 29 (v0.24.0): a finished cleaning-PROFILE run auto-records the
+# trackers linked to that exact profile, and only those; with none linked,
+# every Clean-cycle subscriber records as before. A tracker linked to a
+# cleaning profile shows AUTO-RECORD and names the profile. Same single
+# write path (settings.tdb); profile files are only read.
+#
 # Pass 28 (v0.23.1): the list and Detail pages' show hooks skip their
 # refresh unless the page is still on screen. Open Descale left the
 # list page's queued (after idle) show to paint Prev/Next over the app's
@@ -209,7 +215,7 @@ namespace eval ::plugins::MaintenanceTracker {
     variable contact     "n/a"
     # Bare number, no "v" prefix (ShotHistoryEditor v0.6.4 lesson: the
     # startup log message prepends one).
-    variable version     "0.23.1"
+    variable version     "0.24.0"
     variable name        "Maintenance Tracker"
     variable description "Tracks machine maintenance (backflush, descale, gasket, burrs, water filter, water bottle level, plus your own custom trackers) from user-recorded events and the machine's own dispense reports. Read-only by design; writes only its own settings file."
 
@@ -282,7 +288,7 @@ proc ::plugins::MaintenanceTracker::main {} {
             set hooked 1
         }
     }
-    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 28: stale show hooks no longer repaint; links to a profile or the app's Descale / Clean, SDB read-only)" }
+    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 29: linked cleaning profiles auto-record their tracker; links to a profile or the app's Descale / Clean, SDB read-only)" }
     return
 }
 
