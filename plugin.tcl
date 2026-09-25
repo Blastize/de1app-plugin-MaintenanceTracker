@@ -243,7 +243,7 @@ namespace eval ::plugins::MaintenanceTracker {
     variable contact     "n/a"
     # Bare number, no "v" prefix (ShotHistoryEditor v0.6.4 lesson: the
     # startup log message prepends one).
-    variable version     "0.28.0"
+    variable version     "0.28.1"
     variable name        "Maintenance Tracker"
     variable description "Tracks machine maintenance (backflush, descale, gasket, burrs, water filter, water bottle level, plus your own custom trackers) from user-recorded events and the machine's own dispense reports. Read-only by design; writes only its own settings file."
 
@@ -319,7 +319,7 @@ proc ::plugins::MaintenanceTracker::main {} {
     # v0.27.0: a switch-back left pending by an app restart comes back
     # once the profile and the connection have settled.
     after 20000 ::plugins::MaintenanceTracker::_resume_pending_run
-    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (Pass 34: step editor -- edit, add, remove and reorder a tracker's steps; links to a profile or the app's Descale / Clean, SDB read-only)" }
+    catch { msg "MaintenanceTracker: started v$::plugins::MaintenanceTracker::version (v0.28.1 polish: GHC cup on the Steps hint; step editor; links to a profile or the app's Descale / Clean, SDB read-only)" }
     return
 }
 

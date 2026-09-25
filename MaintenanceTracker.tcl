@@ -1984,6 +1984,48 @@ namespace eval ::plugins::MaintenanceTracker {
         _set_vis $page $tags $show
     }
 
+    # v0.28.1: the DE1 group head's espresso-button icon (owner photo of
+    # the GHC), for the Steps page's "press this button" hint: a SOLID
+    # bowl-shaped cup with a horizontal slot under the rim, a round ring
+    # handle, a thick saucer bar. Box 0..100, centred on (cx, cy), `box`
+    # virtual px. Parts (tags <base>_body/_slot/_ring/_saucer) are born
+    # hidden; the slot is filled with the page background by the caller
+    # (it is a cut-out, so it follows the theme).
+    variable ghc_cup_parts {body slot ring saucer}
+    proc _add_ghc_cup {page base cx cy box color} {
+        set s [expr {double($box) / 100.0}]
+        set P [list]
+        # Doubled points keep the rim corners sharp under -smooth 1.
+        foreach {x y} {12 22 12 22 72 22 72 22 72 36 69 48 62 57 52 60 32 60 22 57 15 48 12 36} {
+            lappend P [expr {int(round($cx + ($x - 50) * $s))}] [expr {int(round($cy + ($y - 47) * $s))}]
+        }
+        dui add canvas_item polygon $page {*}$P -smooth 1 -fill $color -outline $color \
+            -width 1 -tags ${base}_body -initial_state hidden
+        dui add canvas_item rect $page \
+            [expr {int(round($cx + (19 - 50) * $s))}] [expr {int(round($cy + (29 - 47) * $s))}] \
+            [expr {int(round($cx + (65 - 50) * $s))}] [expr {int(round($cy + (39 - 47) * $s))}] \
+            -fill $color -outline "" -width 0 -tags ${base}_slot -initial_state hidden
+        set rw [expr {max(3, int(round(4.5 * $s)))}]
+        dui add canvas_item oval $page \
+            [expr {int(round($cx + (80 - 6.5 - 50) * $s))}] [expr {int(round($cy + (30 - 6.5 - 47) * $s))}] \
+            [expr {int(round($cx + (80 + 6.5 - 50) * $s))}] [expr {int(round($cy + (30 + 6.5 - 47) * $s))}] \
+            -outline $color -width $rw -tags ${base}_ring -initial_state hidden
+        dui add canvas_item line $page \
+            [expr {int(round($cx + (14 - 50) * $s))}] [expr {int(round($cy + (70 - 47) * $s))}] \
+            [expr {int(round($cx + (70 - 50) * $s))}] [expr {int(round($cy + (70 - 47) * $s))}] \
+            -fill $color -width [expr {max(4, int(round(6 * $s)))}] -capstyle round \
+            -tags ${base}_saucer -initial_state hidden
+    }
+
+    proc _show_ghc_cup {page base show} {
+        variable ghc_cup_parts
+        variable L
+        set tags {}
+        foreach part $ghc_cup_parts { lappend tags ${base}_$part }
+        if {$show} { _cfg $page ${base}_slot -fill $L(page_bg) }
+        _set_vis $page $tags $show
+    }
+
     # v0.18.0: human-readable names for every picker icon, shown next
     # to "Icon:" on the Add/Edit pages so the selection has a meaning,
     # not just a shape. Keys match picker_icons exactly.
@@ -4843,7 +4885,11 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
             catch { dui item hide $page mt_record* -initial 1 }
             catch { dui item config $page prof_value -text "" }
             catch { dui item config $page bar_left -label [translate "Back"] }
-            catch { dui item hide $page det_plate* -initial 1 }
+            # v0.28.1: plain canvas items by their EXACT tags -- `det_plate*`
+            # is a literal compound-widget tag and matched nothing, leaving
+            # the grey plate and state dot on screen (two squares).
+            catch { dui item hide $page det_plate -initial 1 }
+            catch { dui item hide $page detail_dot -initial 1 }
             catch { dui item hide $page det_icon -initial 1 }
             foreach {vtag vname} {vsw steam-wand vgf gasket-flat} {
                 ::plugins::MaintenanceTracker::_show_vector_icon $page det_$vtag $vname 0
@@ -4908,7 +4954,8 @@ namespace eval ::dui::pages::MaintenanceTracker_detail {
         # exactly like the tracker's card.
         set tint $L(tint_unknown)
         catch { set tint $L(tint_$state) }
-        catch { dui item show $page det_plate* -initial 1 }
+        catch { dui item show $page det_plate -initial 1 }
+        catch { dui item show $page detail_dot -initial 1 }
         catch { dui item config $page det_plate -fill $tint -outline $tint }
         ::plugins::MaintenanceTracker::_apply_item_icon $page det_icon det $id $color
 
@@ -5766,11 +5813,13 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
         # v0.27.0: while a profile run is armed, the message slot becomes
         # a hint row: the group head's cup glyph + what to do and when
         # the espresso profile comes back. Both born hidden.
-        set ghc_w [expr {int(round(64 * $L(scale)))}]
-        dui add dtext $page [expr {$lx + $ghc_w / 2}] $msg_y -tags steps_ghc \
-            -text [::plugins::MaintenanceTracker::_glyph_for mug-hot] \
-            -font $L(font_icon_plate) -fill $L(col_ok) -anchor center -justify center \
-            -initial_state hidden
+        # v0.28.1: the cup is the group head's own espresso icon (owner
+        # photo of the DE1 GHC: solid bowl with a slot, ring handle,
+        # saucer bar), drawn 72 ref wide -- the font glyph was a
+        # different, smaller cup.
+        set ghc_w [expr {int(round(76 * $L(scale)))}]
+        ::plugins::MaintenanceTracker::_add_ghc_cup $page steps_ghc \
+            [expr {$lx + $ghc_w / 2}] $msg_y [expr {int(round(72 * $L(scale)))}] $L(col_ok)
         dui add dtext $page [expr {$lx + $ghc_w + $L(md)}] $msg_y -tags steps_hint -text "" \
             -font $L(font_primary) -width [expr {$L(content_w) - $ghc_w - $L(md)}] \
             -fill $L(text_hi) -anchor w -justify left -initial_state hidden
@@ -5842,14 +5891,14 @@ namespace eval ::dui::pages::MaintenanceTracker_steps {
             if {$::plugins::MaintenanceTracker::run_started} {
                 set hint "[translate {Running. Your profile}] [dict get $rr prev_title] [translate {comes back when it finishes.}]"
             } else {
-                set hint "[translate {Now press the espresso button on the group head.}] [dict get $rr prev_title] [translate {comes back after the run, or at}] $back_at."
+                set hint "[translate {Press this button on the group head to start.}] [dict get $rr prev_title] [translate {comes back after the run, or at}] $back_at."
             }
             catch { dui item config $page steps_hint -text $hint }
             catch { dui item config $page steps_msg -text "" }
-            catch { dui item show $page steps_ghc -initial 1 }
+            ::plugins::MaintenanceTracker::_show_ghc_cup $page steps_ghc 1
             catch { dui item show $page steps_hint -initial 1 }
         } else {
-            catch { dui item hide $page steps_ghc -initial 1 }
+            ::plugins::MaintenanceTracker::_show_ghc_cup $page steps_ghc 0
             catch { dui item hide $page steps_hint -initial 1 }
         }
         if {$run} {

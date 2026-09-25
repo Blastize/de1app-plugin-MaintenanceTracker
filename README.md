@@ -1,7 +1,7 @@
 # Maintenance Tracker
 
 **Backflush, descale, gaskets, burrs, water filter, bottle level. Counted from your shots, recorded with one tap.**
-Version 0.28.0 · a plugin for the Decent DE1app · by Blastize
+Version 0.28.1 · a plugin for the Decent DE1app · by Blastize
 
 ![The tracker list: every item with its counter and a green, amber or red bar](docs/trackers.png)
 
@@ -50,7 +50,7 @@ measured from the machine's own dispense reports) — plus your own
 **custom trackers** (a second grinder, a water tank clean, anything)
 with their own name, unit and threshold.
 
-Author: **Blastize** · Current version: **0.28.0** (Pass 34)
+Author: **Blastize** · Current version: **0.28.1** (polish)
 
 ## What it will do (target design)
 

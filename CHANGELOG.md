@@ -4,6 +4,19 @@ Entries follow the CLAUDE.md doc cap (~15 lines each; entries that added or
 changed a write capability keep their full write-path description). The long
 pre-trim entries survive in the Desktop archive snapshot of each version.
 
+## v0.28.1 - 2026-09-26 - polish batch - verify.sh run 1 FAIL (a device-log check raced MT's 20 s
+restart switch-back; the switch-back itself worked, 00:12:44), run 2 PASS; cup compared to the owner's GHC photo
+
+- Steps page hint: the cup is now the DE1 group head's own espresso icon (owner photo: solid
+  bowl with a slot under the rim, ring handle, saucer bar), drawn by `_add_ghc_cup` (4 canvas
+  parts, the slot repainted with the page background) and larger; the text reads "Press this
+  button on the group head to start."
+- Detail with nothing selected: the grey icon plate and state dot hid by `det_plate*`, a
+  literal compound-widget tag that matches nothing on a plain canvas item; now exact tags.
+- PROJECT_STATE.md trimmed to current state (~70 lines).
+
+**Safety status: display-only changes; no write behaviour changes.**
+
 ## v0.28.0 - 2026-09-25 - Pass 34: step editor - verify.sh PASS 2026-09-25 on run 1 (six page dumps incl. the editor + logcat clean); live: move + Cancel (nothing saved), edit with the keyboard up + Save ("3 own steps"), Reset to default + Save ("template", key removed)
 
 Base: v0.27.0. Owner: edit the instructions, add steps, "kind of like Drink Menu".
